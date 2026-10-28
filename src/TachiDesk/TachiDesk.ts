@@ -77,7 +77,7 @@ export const TachiDeskInfo: SourceInfo = {
     description: 'Paperback extension which aims to bridge all of Tachidesks features and the Paperback App. (GraphQL)',
     icon: 'icon.png',
     name: 'Tachidesk',
-    version: '3.4.1',
+    version: '3.4.2',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: ContentRating.EVERYONE,
     sourceTags: [
@@ -281,7 +281,7 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
                 const authEnabled = await getAuthState(this.stateManager);
                 const serverURL = await getServerURL(this.stateManager);
 
-                // Only our own server gets the Suwayomi credentials, never third parties (AniList)
+                // Only our own server gets the Suwayomi credentials, never other hosts (e.g. the feed)
                 if (authEnabled && request.url.startsWith(serverURL)) {
                     request.headers = {
                         ...request.headers,
@@ -708,8 +708,8 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
                             App.createPartialSourceManga({
                                 title: manga.title,
                                 mangaId: idStr,
-                                // Hero rows carry AniList banner art and a score/genre subtitle
-                                image: manga.bannerUrl ?? (manga.thumbnailUrl ? serverURL + manga.thumbnailUrl.replace(/^\//, "") : ""),
+                                // Feed rows carry their own (mirrored) image URLs and optional subtitle
+                                image: manga.imageUrl ?? (manga.thumbnailUrl ? serverURL + manga.thumbnailUrl.replace(/^\//, "") : ""),
                                 subtitle: manga.subtitle
                             })
                         )
@@ -805,7 +805,7 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
                     title: manga.title,
                     mangaId: idStr,
                     // Feed rows carry their own (mirrored) image URLs
-                    image: manga.bannerUrl ?? (manga.thumbnailUrl ? serverURL + manga.thumbnailUrl.replace(/^\//, "") : ""),
+                    image: manga.imageUrl ?? (manga.thumbnailUrl ? serverURL + manga.thumbnailUrl.replace(/^\//, "") : ""),
                     subtitle: manga.subtitle
                 })
             )

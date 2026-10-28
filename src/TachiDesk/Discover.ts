@@ -34,7 +34,8 @@ const GENRES = [
 ]
 
 export const DISCOVER_ROWS: DiscoverRow[] = [
-    { key: "hero", title: "Trending Now", style: "featured", sort: "Popularity", ongoingOnly: true },
+    // Same large portrait tiles as Most Popular; the user preferred them to banner art
+    { key: "hero", title: "Trending Now", style: "singleRowLarge", sort: "Popularity", ongoingOnly: true },
     { key: "new", title: "Newly Added", style: "singleRowNormal", sort: "Recently Added" },
     { key: "popular", title: "Most Popular", style: "singleRowLarge", sort: "Popularity" },
     { key: "anime", title: "Now an Anime", style: "singleRowNormal", sort: "Popularity", animeOnly: true },
@@ -194,10 +195,7 @@ export async function getDiscoverRowMangas(
     if (cached && Date.now() - cached.at < ROW_CACHE_TTL_MS) return cached.mangas
 
     try {
-        let mangas = (await limited(() => fetchDiscoverRow(stateManager, requestManager, sourceId, row, 1))).mangas
-        if (row.style === "featured") {
-            mangas = await withBannerArt(requestManager, mangas)
-        }
+        const mangas = (await limited(() => fetchDiscoverRow(stateManager, requestManager, sourceId, row, 1))).mangas
         await stateManager.store(cacheKey, { at: Date.now(), mangas })
         return mangas
     } catch (error) {
@@ -205,51 +203,6 @@ export async function getDiscoverRowMangas(
         if (cached) return cached.mangas
         throw error
     }
-}
-
-// ! Hero banner art
-
-// Weeb Central only has portrait covers; AniList has the wide banner art and
-// scores a Crunchyroll-style hero needs. Page() search returns an empty list on
-// a miss, where a bare Media() search fails the whole batch.
-const ANILIST_URL = "https://graphql.anilist.co"
-const HERO_SIZE = 10
-
-async function withBannerArt(requestManager: RequestManager, mangas: any[]): Promise<any[]> {
-    const candidates = mangas.slice(0, HERO_SIZE * 2)
-    const aliases = candidates.map((manga, i) =>
-        `m${i}: Page(perPage: 1) { media(search: ${JSON.stringify(manga.title)}, type: MANGA, sort: SEARCH_MATCH) { bannerImage genres averageScore } }`
-    )
-
-    let data: any = {}
-    try {
-        const response = await requestManager.schedule(App.createRequest({
-            url: ANILIST_URL,
-            method: "POST",
-            headers: { "Content-Type": "application/json", "Accept": "application/json" },
-            data: JSON.stringify({ query: `query { ${aliases.join(" ")} }` })
-        }), 1)
-        data = JSON.parse(response.data ?? "{}").data ?? {}
-    } catch {
-        // AniList is decoration only; fall back to plain covers
-        return mangas
-    }
-
-    const enriched = candidates.map((manga, i) => {
-        const media = data[`m${i}`]?.media?.[0]
-        if (!media) return manga
-        const score = media.averageScore ? `★ ${media.averageScore}%` : ""
-        return {
-            ...manga,
-            bannerUrl: media.bannerImage ?? undefined,
-            subtitle: [score, ...(media.genres ?? []).slice(0, 3)].filter(Boolean).join(" · ")
-        }
-    })
-
-    // Lead with series that have real banner art, like Crunchyroll's carousel
-    const withBanner = enriched.filter(manga => manga.bannerUrl)
-    const rest = enriched.filter(manga => !manga.bannerUrl)
-    return [...withBanner, ...rest].slice(0, HERO_SIZE)
 }
 
 // ! Precached feed
@@ -311,7 +264,7 @@ export async function fetchLibraryIds(stateManager: SourceStateManager, requestM
 export function feedRowMangas(row: FeedRow, libraryIds: Set<string>): any[] {
     return row.items
         .filter(item => !libraryIds.has(item.id))
-        .map(item => ({ id: item.id, title: item.title, bannerUrl: item.image, subtitle: item.subtitle }))
+        .map(item => ({ id: item.id, title: item.title, imageUrl: item.image, subtitle: item.subtitle }))
 }
 
 // ! Recently read
