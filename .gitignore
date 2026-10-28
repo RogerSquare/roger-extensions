@@ -152,3 +152,7 @@ service-account*.json
 *.pfx
 *.p12
 .secrets.baseline
+
+# Python
+__pycache__/
+*.pyc
