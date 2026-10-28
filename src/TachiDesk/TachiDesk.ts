@@ -35,6 +35,7 @@ import {
     fetchDiscoverRow,
     fetchRecentlyRead,
     findDiscoverSource,
+    getDiscoverRowMangas,
     getDiscoverRow
 } from "./Discover";
 
@@ -73,7 +74,7 @@ export const TachiDeskInfo: SourceInfo = {
     description: 'Paperback extension which aims to bridge all of Tachidesks features and the Paperback App. (GraphQL)',
     icon: 'icon.png',
     name: 'Tachidesk',
-    version: '3.2.0',
+    version: '3.3.0',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: ContentRating.EVERYONE,
     sourceTags: [
@@ -270,12 +271,15 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
     stateManager = App.createSourceStateManager();
     requestManager = App.createRequestManager({
         requestsPerSecond: 4,
-        requestTimeout: 20000,
+        // Discovery rows wait on Suwayomi's per-source queue, which the downloader also uses
+        requestTimeout: 45000,
         interceptor: {
             interceptRequest: async (request: Request) => {
                 const authEnabled = await getAuthState(this.stateManager);
+                const serverURL = await getServerURL(this.stateManager);
 
-                if (authEnabled) {
+                // Only our own server gets the Suwayomi credentials, never third parties (AniList)
+                if (authEnabled && request.url.startsWith(serverURL)) {
                     request.headers = {
                         ...request.headers,
                         authorization: await getAuthString(this.stateManager)
@@ -625,7 +629,7 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
                     if (section.type === "discover") {
                         const row = getDiscoverRow(String(section.id))
                         if (row && discoverSource) {
-                            mangas = (await fetchDiscoverRow(this.stateManager, this.requestManager, discoverSource.id, row, 1)).mangas;
+                            mangas = await getDiscoverRowMangas(this.stateManager, this.requestManager, discoverSource.id, row);
                         }
                     } else if (section.type === "recentread") {
                         // Many chapters per series in a reading session; over-fetch so the row fills after de-dup
@@ -664,7 +668,9 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
                             App.createPartialSourceManga({
                                 title: manga.title,
                                 mangaId: idStr,
-                                image: manga.thumbnailUrl ? serverURL + manga.thumbnailUrl.replace(/^\//, "") : ""
+                                // Hero rows carry AniList banner art and a score/genre subtitle
+                                image: manga.bannerUrl ?? (manga.thumbnailUrl ? serverURL + manga.thumbnailUrl.replace(/^\//, "") : ""),
+                                subtitle: manga.subtitle
                             })
                         )
                     }
