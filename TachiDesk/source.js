@@ -3743,10 +3743,10 @@ const Discover_1 = require("./Discover");
 const Common_1 = require("./Common");
 exports.TachiDeskInfo = {
     author: 'ofelizestevez & Alles',
-    description: 'Paperback extension which aims to bridge all of Tachidesks features and the Paperback App. (GraphQL)',
+    description: "Panelhouse: Roger's self-hosted manga and webtoon library, served by Suwayomi (GraphQL). Based on the Tachidesk extension.",
     icon: 'icon.png',
-    name: 'Tachidesk',
-    version: '3.5.0',
+    name: 'Panelhouse',
+    version: '3.5.1',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: types_1.ContentRating.EVERYONE,
     sourceTags: [
