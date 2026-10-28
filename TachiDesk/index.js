@@ -3095,6 +3095,155 @@ exports.v1Migration = v1Migration;
 },{"buffer":63}],66:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.fetchRecentlyRead = exports.fetchDiscoverRow = exports.findDiscoverSource = exports.getDiscoverRow = exports.DISCOVER_ROWS = exports.DISCOVER_SOURCE_NAME = void 0;
+const Common_1 = require("./Common");
+// Crunchyroll-style discovery rows, built from one Suwayomi source's own
+// filters (sort, genre tags, anime adaptation, adult content). Filters are
+// looked up by name, so positions shifting between source versions is fine;
+// a source without a matching filter just skips that part of the row.
+exports.DISCOVER_SOURCE_NAME = "Weeb Central";
+const GENRES = [
+    "Action", "Adventure", "Comedy", "Drama", "Fantasy", "Mystery", "Romance",
+    "Sci-fi", "Slice of Life", "Supernatural", "Horror", "Psychological",
+    "Sports", "Historical"
+];
+exports.DISCOVER_ROWS = [
+    { key: "hero", title: "Trending Now", style: "featured", sort: "Popularity", ongoingOnly: true },
+    { key: "new", title: "Newly Added", style: "singleRowNormal", sort: "Recently Added" },
+    { key: "popular", title: "Most Popular", style: "singleRowLarge", sort: "Popularity" },
+    { key: "anime", title: "Now an Anime", style: "singleRowNormal", sort: "Popularity", animeOnly: true },
+    ...GENRES.map((genre) => ({
+        key: "genre" + genre.replace(/[^A-Za-z]/g, ""),
+        title: genre,
+        style: "singleRowNormal",
+        sort: "Popularity",
+        tag: genre
+    }))
+];
+function getDiscoverRow(key) {
+    return exports.DISCOVER_ROWS.find(row => row.key === key);
+}
+exports.getDiscoverRow = getDiscoverRow;
+function findDiscoverSource(sources) {
+    return Object.values(sources).find(source => source.displayName.startsWith(exports.DISCOVER_SOURCE_NAME));
+}
+exports.findDiscoverSource = findDiscoverSource;
+// ! Source filters
+const GQL_SOURCE_FILTERS = `
+    query SourceFilters($id: LongString!) {
+        source(id: $id) {
+            filters {
+                __typename
+                ... on SelectFilter { name values }
+                ... on GroupFilter {
+                    name
+                    filters {
+                        ... on CheckBoxFilter { name }
+                        ... on TriStateFilter { name }
+                    }
+                }
+            }
+        }
+    }
+`;
+// Filter lists only change when the source extension updates; cache per source
+const filterCache = {};
+async function getSourceFilters(stateManager, requestManager, sourceId) {
+    const cached = filterCache[sourceId];
+    if (cached)
+        return cached;
+    const res = await (0, Common_1.graphqlRequest)(stateManager, requestManager, GQL_SOURCE_FILTERS, { id: sourceId });
+    const filters = (res.data.source.filters ?? []).map((filter) => ({
+        type: filter.__typename,
+        name: filter.name ?? "",
+        values: filter.values ?? [],
+        children: (filter.filters ?? []).map((child) => child.name ?? "")
+    }));
+    filterCache[sourceId] = filters;
+    return filters;
+}
+function selectChange(filters, name, value) {
+    const position = filters.findIndex(filter => filter.type === "SelectFilter" && filter.name === name);
+    const valueIndex = position === -1 ? -1 : (filters[position]?.values.indexOf(value) ?? -1);
+    return valueIndex === -1 ? [] : [{ position, selectState: valueIndex }];
+}
+function groupChange(filters, name, child, change) {
+    const position = filters.findIndex(filter => filter.type === "GroupFilter" && filter.name === name);
+    const childIndex = position === -1 ? -1 : (filters[position]?.children.indexOf(child) ?? -1);
+    return childIndex === -1 ? [] : [{ position, groupChange: { position: childIndex, ...change } }];
+}
+function buildFilterChanges(filters, row) {
+    return [
+        ...selectChange(filters, "Sort", row.sort),
+        ...selectChange(filters, "Adult Content", "False"),
+        ...(row.animeOnly ? selectChange(filters, "Anime Adaptation", "True") : []),
+        ...(row.ongoingOnly ? groupChange(filters, "Series Status", "Ongoing", { checkBoxState: true }) : []),
+        ...(row.tag ? groupChange(filters, "Tags", row.tag, { triState: "INCLUDE" }) : [])
+    ];
+}
+// ! Fetching
+const GQL_DISCOVER = `
+    mutation Discover($sourceId: LongString!, $page: Int!, $filters: [FilterChangeInput!]) {
+        fetchSourceManga(input: { source: $sourceId, type: SEARCH, page: $page, query: "", filters: $filters }) {
+            hasNextPage
+            mangas {
+                id
+                title
+                thumbnailUrl
+                inLibrary
+            }
+        }
+    }
+`;
+async function fetchDiscoverRow(stateManager, requestManager, sourceId, row, page) {
+    const filters = await getSourceFilters(stateManager, requestManager, sourceId);
+    const res = await (0, Common_1.graphqlRequest)(stateManager, requestManager, GQL_DISCOVER, {
+        sourceId,
+        page,
+        filters: buildFilterChanges(filters, row)
+    });
+    return {
+        // Discovery only surfaces series not already in the library
+        mangas: res.data.fetchSourceManga.mangas.filter((manga) => !manga.inLibrary),
+        hasNextPage: res.data.fetchSourceManga.hasNextPage
+    };
+}
+exports.fetchDiscoverRow = fetchDiscoverRow;
+// ! Recently read
+const GQL_RECENTLY_READ = `
+    query RecentlyRead($offset: Int, $first: Int) {
+        chapters(
+            filter: { lastReadAt: { greaterThan: "0" }, inLibrary: { equalTo: true } }
+            orderBy: LAST_READ_AT
+            orderByType: DESC
+            offset: $offset
+            first: $first
+        ) {
+            nodes {
+                manga {
+                    id
+                    title
+                    thumbnailUrl
+                }
+            }
+            pageInfo {
+                hasNextPage
+            }
+        }
+    }
+`;
+async function fetchRecentlyRead(stateManager, requestManager, offset, first) {
+    const res = await (0, Common_1.graphqlRequest)(stateManager, requestManager, GQL_RECENTLY_READ, { offset, first });
+    return {
+        mangas: res.data.chapters.nodes.map((node) => node.manga),
+        hasNextPage: res.data.chapters.pageInfo.hasNextPage
+    };
+}
+exports.fetchRecentlyRead = fetchRecentlyRead;
+
+},{"./Common":65}],67:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 exports.resetSettingsButton = exports.languageSettings = exports.sourceSettings = exports.categoriesSettings = exports.HomepageSettings = exports.serverAddressSettings = void 0;
 const Common_1 = require("./Common");
 // ---------------------------------------------------------------------------
@@ -3472,19 +3621,20 @@ const resetSettingsButton = async (stateManager) => {
 };
 exports.resetSettingsButton = resetSettingsButton;
 
-},{"./Common":65}],67:[function(require,module,exports){
+},{"./Common":65}],68:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TachiDesk = exports.TachiDeskInfo = void 0;
 const types_1 = require("@paperback/types");
 const Settings_1 = require("./Settings");
+const Discover_1 = require("./Discover");
 const Common_1 = require("./Common");
 exports.TachiDeskInfo = {
     author: 'ofelizestevez & Alles',
     description: 'Paperback extension which aims to bridge all of Tachidesks features and the Paperback App. (GraphQL)',
     icon: 'icon.png',
     name: 'Tachidesk',
-    version: '3.1.0',
+    version: '3.2.0',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: types_1.ContentRating.EVERYONE,
     sourceTags: [
@@ -3858,6 +4008,37 @@ class TachiDesk {
         const categoryRowStyle = (await (0, Common_1.getCategoryRowStyle)(this.stateManager))[0];
         const sourceRowStyle = (await (0, Common_1.getSourceRowStyle)(this.stateManager))[0];
         const sections = [];
+        // Crunchyroll-style home page built from one source's filters. The
+        // per-source Popular/Latest rows below remain only as a fallback when
+        // that source isn't installed.
+        const knownSources = Object.keys(serverSources).length > 1
+            ? serverSources
+            : await (0, Common_1.fetchServerSources)(this.stateManager, this.requestManager);
+        const discoverSource = (0, Discover_1.findDiscoverSource)(knownSources);
+        sections.push({
+            section: App.createHomeSection({
+                id: "recentread",
+                title: "Recently Read",
+                containsMoreItems: true,
+                type: types_1.HomeSectionType.singleRowNormal
+            }),
+            type: "recentread",
+            id: 0
+        });
+        if (discoverSource) {
+            for (const row of Discover_1.DISCOVER_ROWS) {
+                sections.push({
+                    section: App.createHomeSection({
+                        id: "discover-" + row.key,
+                        title: row.title,
+                        containsMoreItems: true,
+                        type: types_1.HomeSectionType[row.style]
+                    }),
+                    type: "discover",
+                    id: row.key
+                });
+            }
+        }
         if (updatedRowState) {
             sections.push({
                 section: App.createHomeSection({
@@ -3897,7 +4078,7 @@ class TachiDesk {
                 });
             }
         }
-        if (sourceRowState) {
+        if (sourceRowState && !discoverSource) {
             const fetchedSources = await (0, Common_1.getServerSources)(this.stateManager);
             const selectedSources = await (0, Common_1.getSelectedSources)(this.stateManager);
             for (const sourceId of selectedSources) {
@@ -3925,9 +4106,13 @@ class TachiDesk {
                 }
             }
         }
-        // Discovery first (Popular, then Latest across sources), then the library rows
-        const sectionRank = { popular: 0, latest: 1, updated: 2, category: 3 };
-        sections.sort((a, b) => sectionRank[a.type] - sectionRank[b.type]);
+        // Hero banner, then Recently Read, then discovery, then the library rows
+        const sectionRank = (def) => {
+            if (def.type === "discover" && def.id === "hero")
+                return 0;
+            return { recentread: 1, discover: 2, popular: 3, latest: 4, updated: 5, category: 6 }[def.type] ?? 7;
+        };
+        sections.sort((a, b) => sectionRank(a) - sectionRank(b));
         // Execute promises to fill section content
         for (const section of sections) {
             sectionCallback(section.section);
@@ -3935,7 +4120,17 @@ class TachiDesk {
                 try {
                     const tiles = [];
                     let mangas = [];
-                    if (section.type === "updated") {
+                    if (section.type === "discover") {
+                        const row = (0, Discover_1.getDiscoverRow)(String(section.id));
+                        if (row && discoverSource) {
+                            mangas = (await (0, Discover_1.fetchDiscoverRow)(this.stateManager, this.requestManager, discoverSource.id, row, 1)).mangas;
+                        }
+                    }
+                    else if (section.type === "recentread") {
+                        // Many chapters per series in a reading session; over-fetch so the row fills after de-dup
+                        mangas = (await (0, Discover_1.fetchRecentlyRead)(this.stateManager, this.requestManager, 0, mangaPerRow * 20)).mangas;
+                    }
+                    else if (section.type === "updated") {
                         const res = await (0, Common_1.graphqlRequest)(this.stateManager, this.requestManager, GQL_GET_RECENT_CHAPTERS, {
                             offset: 0,
                             // One series often has many chapters in a row; over-fetch so the row still fills after de-dup
@@ -3993,6 +4188,19 @@ class TachiDesk {
         let mangas = [];
         let hasNextPage = false;
         switch (type) {
+            case "discover": {
+                const row = (0, Discover_1.getDiscoverRow)(sourceId);
+                const discoverSource = (0, Discover_1.findDiscoverSource)(await (0, Common_1.getServerSources)(this.stateManager));
+                if (row && discoverSource) {
+                    ({ mangas, hasNextPage } = await (0, Discover_1.fetchDiscoverRow)(this.stateManager, this.requestManager, discoverSource.id, row, page));
+                }
+                break;
+            }
+            case "recentread": {
+                const pageSize = 50;
+                ({ mangas, hasNextPage } = await (0, Discover_1.fetchRecentlyRead)(this.stateManager, this.requestManager, (page - 1) * pageSize, pageSize));
+                break;
+            }
             case "updated": {
                 const pageSize = 50;
                 const offset = (page - 1) * pageSize;
@@ -4139,5 +4347,5 @@ class TachiDesk {
 }
 exports.TachiDesk = TachiDesk;
 
-},{"./Common":65,"./Settings":66,"@paperback/types":61}]},{},[67])(67)
+},{"./Common":65,"./Discover":66,"./Settings":67,"@paperback/types":61}]},{},[68])(68)
 });
