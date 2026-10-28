@@ -65,13 +65,17 @@ export const TachiDeskInfo: SourceInfo = {
     description: 'Paperback extension which aims to bridge all of Tachidesks features and the Paperback App. (GraphQL)',
     icon: 'icon.png',
     name: 'Tachidesk',
-    version: '3.0.0',
+    version: '3.1.0',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: ContentRating.EVERYONE,
     sourceTags: [
         {
             text: "Self-hosted",
             type: BadgeColor.GREY
+        },
+        {
+            text: "roger-extensions",
+            type: BadgeColor.BLUE
         }
     ],
     intents: SourceIntents.MANGA_CHAPTERS | SourceIntents.SETTINGS_UI | SourceIntents.HOMEPAGE_SECTIONS | SourceIntents.MANGA_TRACKING
@@ -162,8 +166,11 @@ const GQL_FETCH_CHAPTER_PAGES = `
 const GQL_GET_RECENT_CHAPTERS = `
     query GetRecentChapters($offset: Int, $first: Int) {
         chapters(
-            condition: { isDownloaded: false }
-            orderBy: FETCHED_AT
+            # Library series only, newest release first. Fetch time also covers
+            # series merely browsed in Suwayomi, and isDownloaded: false hid
+            # everything once chapters were downloaded.
+            filter: { inLibrary: { equalTo: true } }
+            orderBy: UPLOAD_DATE
             orderByType: DESC
             offset: $offset
             first: $first
@@ -568,7 +575,8 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
                     if (section.type === "updated") {
                         const res = await graphqlRequest(this.stateManager, this.requestManager, GQL_GET_RECENT_CHAPTERS, {
                             offset: 0,
-                            first: mangaPerRow
+                            // One series often has many chapters in a row; over-fetch so the row still fills after de-dup
+                            first: mangaPerRow * 20
                         });
                         mangas = res.data.chapters.nodes.map((node: any) => node.manga);
                     } else if (section.type === "category") {
@@ -587,7 +595,8 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
 
                     // De-dup (recent chapters can have duplicates)
                     const seen = new Set<string>();
-                    for (const manga of mangas.slice(0, mangaPerRow)) {
+                    for (const manga of mangas) {
+                        if (tiles.length >= mangaPerRow) break;
                         const idStr = manga.id.toString();
                         if (seen.has(idStr)) continue;
                         seen.add(idStr);
