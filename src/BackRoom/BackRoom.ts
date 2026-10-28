@@ -16,7 +16,7 @@ export const BackRoomInfo: SourceInfo = {
     ...TachiDeskInfo,
     description: "Back Room: Roger's separate 18+ manga and webtoon library, served by its own Suwayomi (GraphQL).",
     name: 'Back Room',
-    version: '1.0.0',
+    version: '1.0.1',
     contentRating: ContentRating.ADULT,
     sourceTags: [
         {
