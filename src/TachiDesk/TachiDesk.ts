@@ -31,6 +31,14 @@ import {
 } from "./Settings";
 
 import {
+    DISCOVER_ROWS,
+    fetchDiscoverRow,
+    fetchRecentlyRead,
+    findDiscoverSource,
+    getDiscoverRow
+} from "./Discover";
+
+import {
     DEFAULT_SERVER_URL,
     fetchServerCategories,
     fetchServerSources,
@@ -65,7 +73,7 @@ export const TachiDeskInfo: SourceInfo = {
     description: 'Paperback extension which aims to bridge all of Tachidesks features and the Paperback App. (GraphQL)',
     icon: 'icon.png',
     name: 'Tachidesk',
-    version: '3.1.0',
+    version: '3.2.0',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: ContentRating.EVERYONE,
     sourceTags: [
@@ -487,10 +495,44 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
 
         type SectionDef = {
             section: HomeSection;
-            type: "updated" | "category" | "popular" | "latest";
+            type: "updated" | "category" | "popular" | "latest" | "discover" | "recentread";
             id: string | number;
         };
         const sections: SectionDef[] = [];
+
+        // Crunchyroll-style home page built from one source's filters. The
+        // per-source Popular/Latest rows below remain only as a fallback when
+        // that source isn't installed.
+        const knownSources = Object.keys(serverSources).length > 1
+            ? serverSources
+            : await fetchServerSources(this.stateManager, this.requestManager)
+        const discoverSource = findDiscoverSource(knownSources)
+
+        sections.push({
+            section: App.createHomeSection({
+                id: "recentread",
+                title: "Recently Read",
+                containsMoreItems: true,
+                type: HomeSectionType.singleRowNormal
+            }),
+            type: "recentread",
+            id: 0
+        })
+
+        if (discoverSource) {
+            for (const row of DISCOVER_ROWS) {
+                sections.push({
+                    section: App.createHomeSection({
+                        id: "discover-" + row.key,
+                        title: row.title,
+                        containsMoreItems: true,
+                        type: HomeSectionType[row.style]
+                    }),
+                    type: "discover",
+                    id: row.key
+                })
+            }
+        }
 
         if (updatedRowState) {
             sections.push({
@@ -533,7 +575,7 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
             }
         }
 
-        if (sourceRowState) {
+        if (sourceRowState && !discoverSource) {
             const fetchedSources = await getServerSources(this.stateManager);
             const selectedSources = await getSelectedSources(this.stateManager);
 
@@ -564,9 +606,12 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
             }
         }
 
-        // Discovery first (Popular, then Latest across sources), then the library rows
-        const sectionRank = { popular: 0, latest: 1, updated: 2, category: 3 }
-        sections.sort((a, b) => sectionRank[a.type] - sectionRank[b.type])
+        // Hero banner, then Recently Read, then discovery, then the library rows
+        const sectionRank = (def: SectionDef) => {
+            if (def.type === "discover" && def.id === "hero") return 0
+            return { recentread: 1, discover: 2, popular: 3, latest: 4, updated: 5, category: 6 }[def.type] ?? 7
+        }
+        sections.sort((a, b) => sectionRank(a) - sectionRank(b))
 
         // Execute promises to fill section content
         for (const section of sections) {
@@ -577,7 +622,15 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
                     const tiles = [];
                     let mangas: any[] = [];
 
-                    if (section.type === "updated") {
+                    if (section.type === "discover") {
+                        const row = getDiscoverRow(String(section.id))
+                        if (row && discoverSource) {
+                            mangas = (await fetchDiscoverRow(this.stateManager, this.requestManager, discoverSource.id, row, 1)).mangas;
+                        }
+                    } else if (section.type === "recentread") {
+                        // Many chapters per series in a reading session; over-fetch so the row fills after de-dup
+                        mangas = (await fetchRecentlyRead(this.stateManager, this.requestManager, 0, mangaPerRow * 20)).mangas;
+                    } else if (section.type === "updated") {
                         const res = await graphqlRequest(this.stateManager, this.requestManager, GQL_GET_RECENT_CHAPTERS, {
                             offset: 0,
                             // One series often has many chapters in a row; over-fetch so the row still fills after de-dup
@@ -639,6 +692,19 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
         let hasNextPage = false;
 
         switch (type) {
+            case "discover": {
+                const row = getDiscoverRow(sourceId);
+                const discoverSource = findDiscoverSource(await getServerSources(this.stateManager));
+                if (row && discoverSource) {
+                    ({ mangas, hasNextPage } = await fetchDiscoverRow(this.stateManager, this.requestManager, discoverSource.id, row, page));
+                }
+                break;
+            }
+            case "recentread": {
+                const pageSize = 50;
+                ({ mangas, hasNextPage } = await fetchRecentlyRead(this.stateManager, this.requestManager, (page - 1) * pageSize, pageSize));
+                break;
+            }
             case "updated": {
                 const pageSize = 50;
                 const offset = (page - 1) * pageSize;
