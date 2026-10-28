@@ -2490,7 +2490,7 @@ exports.BackRoomInfo = {
     ...TachiDesk_1.TachiDeskInfo,
     description: "Back Room: Roger's separate 18+ manga and webtoon library, served by its own Suwayomi (GraphQL).",
     name: 'Back Room',
-    version: '1.0.0',
+    version: '1.0.1',
     contentRating: types_1.ContentRating.ADULT,
     sourceTags: [
         {
@@ -3776,7 +3776,7 @@ exports.TachiDeskInfo = {
     description: "Panelhouse: Roger's self-hosted manga and webtoon library, served by Suwayomi (GraphQL). Based on the Tachidesk extension.",
     icon: 'icon.png',
     name: 'Panelhouse',
-    version: '3.5.2',
+    version: '3.5.3',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: types_1.ContentRating.EVERYONE,
     sourceTags: [
