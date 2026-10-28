@@ -1,6 +1,46 @@
 <!-- ## Warning: Project is not being maintained!
 **The original maintainer doesn't own the device to maintain this repo anymore thus this repo is archived, contact us on [Suwayomi discord](https://discord.gg/DDZdqZWaHA) if you want become a maintainer ^^** -->
 
+# roger-extensions
+
+Personal Paperback **0.8** extension repository, forked from
+[Suwayomi/tachidesk-paperback-ext](https://github.com/Suwayomi/tachidesk-paperback-ext).
+The upstream README follows below.
+
+## Add it to Paperback
+
+1. Paperback → **Settings → External Sources → Edit → +**
+2. Base URL: `https://rogersquare.github.io/roger-extensions/`
+3. Browse the repo and install **Tachidesk**.
+4. Open the source's settings and set the server URL (e.g. `http://10.0.0.145:4567`),
+   then turn on authorization and enter the Suwayomi username and password.
+
+Don't add the upstream Suwayomi repo too: both publish the source id `TachiDesk`
+and would collide.
+
+## Build and publish
+
+- Every push to `master` runs `.github/workflows/main.yml`: `npm ci` →
+  `npm run bundle` → deploys `bundles/` to the `gh-pages` branch, which GitHub
+  Pages serves.
+- Local build (Node 20): `npm ci && npm run bundle`; `npm run serve` serves the
+  bundle on the LAN so a phone can test it before pushing.
+- Bump `version` in `src/TachiDesk/TachiDesk.ts` for Paperback to offer the update.
+
+## Upstream sync
+
+```bash
+git fetch upstream
+git merge upstream/master
+```
+
+## Secrets
+
+`.gitignore` carries the standard secrets block and `.pre-commit-config.yaml`
+runs gitleaks; enable it once per clone with `pre-commit install`.
+
+---
+
 # Tachidesk Paperback Extension
 <img src="https://user-images.githubusercontent.com/47613715/230618874-1d8bef58-382a-483e-9a4d-377714648965.png" alt="drawing" width="200"/>
 

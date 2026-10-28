@@ -131,3 +131,24 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# Canonical secret-leak .gitignore block — append to every repo's .gitignore.
+# Source of truth: atrium/docs/standards/gitignore-secrets.txt
+# Drives: feat-secrets-audit-001 (Atrium task)
+
+# --- secrets / env ---
+.env
+.env.*
+!.env.example
+!.env.sample
+.envrc
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+credentials*.json
+secrets*.json
+service-account*.json
+*.pfx
+*.p12
+.secrets.baseline
