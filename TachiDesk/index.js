@@ -3176,10 +3176,10 @@ function groupChange(filters, name, child, change) {
     const childIndex = position === -1 ? -1 : (filters[position]?.children.indexOf(child) ?? -1);
     return childIndex === -1 ? [] : [{ position, groupChange: { position: childIndex, ...change } }];
 }
-function buildFilterChanges(filters, row) {
+function buildFilterChanges(filters, row, adultContent) {
     return [
         ...selectChange(filters, "Sort", row.sort),
-        ...selectChange(filters, "Adult Content", "False"),
+        ...selectChange(filters, "Adult Content", adultContent),
         ...(row.animeOnly ? selectChange(filters, "Anime Adaptation", "True") : []),
         ...(row.ongoingOnly ? groupChange(filters, "Series Status", "Ongoing", { checkBoxState: true }) : []),
         ...(row.tag ? groupChange(filters, "Tags", row.tag, { triState: "INCLUDE" }) : []),
@@ -3200,12 +3200,12 @@ const GQL_DISCOVER = `
         }
     }
 `;
-async function fetchDiscoverRow(stateManager, requestManager, sourceId, row, page) {
+async function fetchDiscoverRow(stateManager, requestManager, sourceId, row, page, adultContent) {
     const filters = await getSourceFilters(stateManager, requestManager, sourceId);
     const res = await (0, Common_1.graphqlRequest)(stateManager, requestManager, GQL_DISCOVER, {
         sourceId,
         page,
-        filters: buildFilterChanges(filters, row)
+        filters: buildFilterChanges(filters, row, adultContent)
     });
     return {
         // Discovery only surfaces series not already in the library
@@ -3235,13 +3235,13 @@ async function limited(task) {
         waitingFetches.shift()?.();
     }
 }
-async function getDiscoverRowMangas(stateManager, requestManager, sourceId, row) {
+async function getDiscoverRowMangas(stateManager, requestManager, sourceId, row, adultContent) {
     const cacheKey = "discover_cache_" + row.key;
     const cached = await stateManager.retrieve(cacheKey);
     if (cached && Date.now() - cached.at < ROW_CACHE_TTL_MS)
         return cached.mangas;
     try {
-        const mangas = (await limited(() => fetchDiscoverRow(stateManager, requestManager, sourceId, row, 1))).mangas;
+        const mangas = (await limited(() => fetchDiscoverRow(stateManager, requestManager, sourceId, row, 1, adultContent))).mangas;
         await stateManager.store(cacheKey, { at: Date.now(), mangas });
         return mangas;
     }
@@ -3253,18 +3253,13 @@ async function getDiscoverRowMangas(stateManager, requestManager, sourceId, row)
     }
 }
 exports.getDiscoverRowMangas = getDiscoverRowMangas;
-// ! Precached feed
-// manga-feed (feed/ in this repo, runs on the NAS next to Suwayomi) rebuilds
-// every row every few hours with mirrored covers and rendered hero art. One
-// LAN request replaces ~20 live scrapes; the live rows above are the fallback.
-const FEED_PORT = 4580;
-function feedBaseURL(serverURL) {
+function feedBaseURL(serverURL, feedPort) {
     const match = serverURL.match(/^(https?:\/\/[^\/:]+)/);
-    return match ? `${match[1]}:${FEED_PORT}/` : "";
+    return match ? `${match[1]}:${feedPort}/` : "";
 }
 exports.feedBaseURL = feedBaseURL;
-async function fetchFeedRows(requestManager, serverURL) {
-    const base = feedBaseURL(serverURL);
+async function fetchFeedRows(requestManager, serverURL, feedPort) {
+    const base = feedBaseURL(serverURL, feedPort);
     if (!base)
         return undefined;
     try {
@@ -3746,7 +3741,7 @@ exports.TachiDeskInfo = {
     description: "Panelhouse: Roger's self-hosted manga and webtoon library, served by Suwayomi (GraphQL). Based on the Tachidesk extension.",
     icon: 'icon.png',
     name: 'Panelhouse',
-    version: '3.5.1',
+    version: '3.5.2',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: types_1.ContentRating.EVERYONE,
     sourceTags: [
@@ -3929,6 +3924,9 @@ const GQL_UPDATE_CHAPTER_READ = `
 class TachiDesk {
     constructor() {
         this.stateManager = App.createSourceStateManager();
+        // Back Room (src/BackRoom, the 18+ sibling source) overrides these two
+        this.feedPort = 4580;
+        this.adultContent = "False";
         this.requestManager = App.createRequestManager({
             requestsPerSecond: 4,
             // Discovery rows wait on Suwayomi's per-source queue, which the downloader also uses
@@ -4151,7 +4149,7 @@ class TachiDesk {
         const discoverSource = (0, Discover_1.findDiscoverSource)(knownSources);
         // The NAS feed has every discovery row precached; live rows are the fallback
         const [feedRows, library] = await Promise.all([
-            (0, Discover_1.fetchFeedRows)(this.requestManager, serverURL),
+            (0, Discover_1.fetchFeedRows)(this.requestManager, serverURL, this.feedPort),
             (0, Discover_1.fetchLibraryIds)(this.stateManager, this.requestManager)
         ]);
         sections.push({
@@ -4281,7 +4279,7 @@ class TachiDesk {
                     else if (section.type === "discover") {
                         const row = (0, Discover_1.getDiscoverRow)(String(section.id));
                         if (row && discoverSource) {
-                            mangas = await (0, Discover_1.getDiscoverRowMangas)(this.stateManager, this.requestManager, discoverSource.id, row);
+                            mangas = await (0, Discover_1.getDiscoverRowMangas)(this.stateManager, this.requestManager, discoverSource.id, row, this.adultContent);
                         }
                     }
                     else if (section.type === "recentread") {
@@ -4351,7 +4349,7 @@ class TachiDesk {
             case "feed": {
                 // The feed already holds a full row (two source pages); no further paging
                 const [feedRows, library] = await Promise.all([
-                    (0, Discover_1.fetchFeedRows)(this.requestManager, serverURL),
+                    (0, Discover_1.fetchFeedRows)(this.requestManager, serverURL, this.feedPort),
                     (0, Discover_1.fetchLibraryIds)(this.stateManager, this.requestManager)
                 ]);
                 const row = feedRows?.find(feedRow => feedRow.key === sourceId);
@@ -4363,7 +4361,7 @@ class TachiDesk {
                 const row = (0, Discover_1.getDiscoverRow)(sourceId);
                 const discoverSource = (0, Discover_1.findDiscoverSource)(await (0, Common_1.getServerSources)(this.stateManager));
                 if (row && discoverSource) {
-                    ({ mangas, hasNextPage } = await (0, Discover_1.fetchDiscoverRow)(this.stateManager, this.requestManager, discoverSource.id, row, page));
+                    ({ mangas, hasNextPage } = await (0, Discover_1.fetchDiscoverRow)(this.stateManager, this.requestManager, discoverSource.id, row, page, this.adultContent));
                 }
                 break;
             }
