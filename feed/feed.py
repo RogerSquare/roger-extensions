@@ -32,8 +32,8 @@ WARM_MAX_AGE_HOURS = float(os.environ.get("WARM_MAX_AGE_HOURS", "20"))
 DEDUPE_MINUTES = float(os.environ.get("DEDUPE_MINUTES", "5"))
 DEDUPE_DRY_RUN = os.environ.get("DEDUPE_DRY_RUN", "true").lower() != "false"
 SOURCE_LANG = os.environ.get("SOURCE_LANG", "en")
-# Copycat sites and the empty local source never get rows
-SKIP_SOURCES = [s.strip() for s in os.environ.get("SKIP_SOURCES", "Local source,Bbato").split(",") if s.strip()]
+# Copycat sites, the empty local source, and sources the user rejected (Mangago) never feed rows
+SKIP_SOURCES = [s.strip() for s in os.environ.get("SKIP_SOURCES", "Local source,Bbato,Mangago").split(",") if s.strip()]
 SOURCE_NAME = os.environ.get("DISCOVER_SOURCE", "Weeb Central")
 USER_AGENT = "manga-feed/1.0 (+https://github.com/RogerSquare/roger-extensions)"
 
@@ -360,7 +360,20 @@ def build_feed():
     # Pool series not yet in a row still get pre-fetched, so their genres are
     # known and they can land in genre rows on the next build
     pool_row = {"key": "_pool", "items": [{"id": str(m["id"])} for lists in pool.values() for lst in lists for m in lst]}
+    prune_covers({item["id"] for row in rows_out for item in row["items"]})
     return rows_out + [pool_row]
+
+
+def prune_covers(keep_ids):
+    """Delete mirrored covers no row uses, e.g. after a source is uninstalled or skipped."""
+    cover_dir = os.path.join(DATA_DIR, "img", "c")
+    removed = 0
+    for name in os.listdir(cover_dir) if os.path.isdir(cover_dir) else []:
+        if name.endswith(".jpg") and name[:-4] not in keep_ids:
+            os.remove(os.path.join(cover_dir, name))
+            removed += 1
+    if removed:
+        log(f"pruned {removed} unused covers")
 
 
 def warm_series(rows):
