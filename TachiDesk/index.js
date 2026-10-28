@@ -3095,7 +3095,7 @@ exports.v1Migration = v1Migration;
 },{"buffer":63}],66:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.fetchRecentlyRead = exports.getDiscoverRowMangas = exports.fetchDiscoverRow = exports.findDiscoverSource = exports.getDiscoverRow = exports.DISCOVER_ROWS = exports.DISCOVER_SOURCE_NAME = void 0;
+exports.fetchRecentlyRead = exports.feedRowMangas = exports.fetchLibraryIds = exports.fetchFeedRows = exports.feedBaseURL = exports.getDiscoverRowMangas = exports.fetchDiscoverRow = exports.findDiscoverSource = exports.getDiscoverRow = exports.DISCOVER_ROWS = exports.DISCOVER_SOURCE_NAME = void 0;
 const Common_1 = require("./Common");
 // Crunchyroll-style discovery rows, built from one Suwayomi source's own
 // filters (sort, genre tags, anime adaptation, adult content). Filters are
@@ -3290,6 +3290,62 @@ async function withBannerArt(requestManager, mangas) {
     const rest = enriched.filter(manga => !manga.bannerUrl);
     return [...withBanner, ...rest].slice(0, HERO_SIZE);
 }
+// ! Precached feed
+// manga-feed (feed/ in this repo, runs on the NAS next to Suwayomi) rebuilds
+// every row every few hours with mirrored covers and rendered hero art. One
+// LAN request replaces ~20 live scrapes; the live rows above are the fallback.
+const FEED_PORT = 4580;
+function feedBaseURL(serverURL) {
+    const match = serverURL.match(/^(https?:\/\/[^\/:]+)/);
+    return match ? `${match[1]}:${FEED_PORT}/` : "";
+}
+exports.feedBaseURL = feedBaseURL;
+async function fetchFeedRows(requestManager, serverURL) {
+    const base = feedBaseURL(serverURL);
+    if (!base)
+        return undefined;
+    try {
+        const response = await requestManager.schedule(App.createRequest({ url: base + "feed.json", method: "GET" }), 0);
+        if (response.status !== 200)
+            return undefined;
+        const feed = JSON.parse(response.data ?? "");
+        const rows = feed.rows ?? [];
+        // Image paths in the feed are relative to the feed server
+        return rows.map(row => ({
+            ...row,
+            items: row.items.map(item => ({ ...item, image: base + item.image }))
+        }));
+    }
+    catch {
+        return undefined;
+    }
+}
+exports.fetchFeedRows = fetchFeedRows;
+const GQL_LIBRARY_IDS = `
+    query LibraryIds {
+        mangas(condition: { inLibrary: true }) {
+            nodes { id }
+        }
+    }
+`;
+// The feed is library-agnostic; hide library series on the phone instead
+async function fetchLibraryIds(stateManager, requestManager) {
+    try {
+        const res = await (0, Common_1.graphqlRequest)(stateManager, requestManager, GQL_LIBRARY_IDS);
+        return new Set(res.data.mangas.nodes.map((node) => String(node.id)));
+    }
+    catch {
+        return new Set();
+    }
+}
+exports.fetchLibraryIds = fetchLibraryIds;
+// Shape feed items like the GraphQL mangas the tile builder already handles
+function feedRowMangas(row, libraryIds) {
+    return row.items
+        .filter(item => !libraryIds.has(item.id))
+        .map(item => ({ id: item.id, title: item.title, bannerUrl: item.image, subtitle: item.subtitle }));
+}
+exports.feedRowMangas = feedRowMangas;
 // ! Recently read
 const GQL_RECENTLY_READ = `
     query RecentlyRead($offset: Int, $first: Int) {
@@ -3715,7 +3771,7 @@ exports.TachiDeskInfo = {
     description: 'Paperback extension which aims to bridge all of Tachidesks features and the Paperback App. (GraphQL)',
     icon: 'icon.png',
     name: 'Tachidesk',
-    version: '3.3.0',
+    version: '3.4.0',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: types_1.ContentRating.EVERYONE,
     sourceTags: [
@@ -4099,6 +4155,11 @@ class TachiDesk {
             ? serverSources
             : await (0, Common_1.fetchServerSources)(this.stateManager, this.requestManager);
         const discoverSource = (0, Discover_1.findDiscoverSource)(knownSources);
+        // The NAS feed has every discovery row precached; live rows are the fallback
+        const [feedRows, libraryIds] = await Promise.all([
+            (0, Discover_1.fetchFeedRows)(this.requestManager, serverURL),
+            (0, Discover_1.fetchLibraryIds)(this.stateManager, this.requestManager)
+        ]);
         sections.push({
             section: App.createHomeSection({
                 id: "recentread",
@@ -4109,7 +4170,21 @@ class TachiDesk {
             type: "recentread",
             id: 0
         });
-        if (discoverSource) {
+        if (feedRows) {
+            for (const row of feedRows) {
+                sections.push({
+                    section: App.createHomeSection({
+                        id: "feed-" + row.key,
+                        title: row.title,
+                        containsMoreItems: true,
+                        type: types_1.HomeSectionType[row.style]
+                    }),
+                    type: "feed",
+                    id: row.key
+                });
+            }
+        }
+        else if (discoverSource) {
             for (const row of Discover_1.DISCOVER_ROWS) {
                 sections.push({
                     section: App.createHomeSection({
@@ -4162,7 +4237,7 @@ class TachiDesk {
                 });
             }
         }
-        if (sourceRowState && !discoverSource) {
+        if (sourceRowState && !feedRows && !discoverSource) {
             const fetchedSources = await (0, Common_1.getServerSources)(this.stateManager);
             const selectedSources = await (0, Common_1.getSelectedSources)(this.stateManager);
             for (const sourceId of selectedSources) {
@@ -4192,9 +4267,9 @@ class TachiDesk {
         }
         // Hero banner, then Recently Read, then discovery, then the library rows
         const sectionRank = (def) => {
-            if (def.type === "discover" && def.id === "hero")
+            if ((def.type === "discover" || def.type === "feed") && def.id === "hero")
                 return 0;
-            return { recentread: 1, discover: 2, popular: 3, latest: 4, updated: 5, category: 6 }[def.type] ?? 7;
+            return { recentread: 1, feed: 2, discover: 2, popular: 3, latest: 4, updated: 5, category: 6 }[def.type] ?? 7;
         };
         sections.sort((a, b) => sectionRank(a) - sectionRank(b));
         // Execute promises to fill section content
@@ -4204,7 +4279,12 @@ class TachiDesk {
                 try {
                     const tiles = [];
                     let mangas = [];
-                    if (section.type === "discover") {
+                    if (section.type === "feed") {
+                        const row = feedRows?.find(feedRow => feedRow.key === section.id);
+                        if (row)
+                            mangas = (0, Discover_1.feedRowMangas)(row, libraryIds);
+                    }
+                    else if (section.type === "discover") {
                         const row = (0, Discover_1.getDiscoverRow)(String(section.id));
                         if (row && discoverSource) {
                             mangas = await (0, Discover_1.getDiscoverRowMangas)(this.stateManager, this.requestManager, discoverSource.id, row);
@@ -4274,6 +4354,17 @@ class TachiDesk {
         let mangas = [];
         let hasNextPage = false;
         switch (type) {
+            case "feed": {
+                // The feed already holds a full row (two source pages); no further paging
+                const [feedRows, libraryIds] = await Promise.all([
+                    (0, Discover_1.fetchFeedRows)(this.requestManager, serverURL),
+                    (0, Discover_1.fetchLibraryIds)(this.stateManager, this.requestManager)
+                ]);
+                const row = feedRows?.find(feedRow => feedRow.key === sourceId);
+                if (row)
+                    mangas = (0, Discover_1.feedRowMangas)(row, libraryIds);
+                break;
+            }
             case "discover": {
                 const row = (0, Discover_1.getDiscoverRow)(sourceId);
                 const discoverSource = (0, Discover_1.findDiscoverSource)(await (0, Common_1.getServerSources)(this.stateManager));
@@ -4328,7 +4419,9 @@ class TachiDesk {
             tiles.push(App.createPartialSourceManga({
                 title: manga.title,
                 mangaId: idStr,
-                image: manga.thumbnailUrl ? serverURL + manga.thumbnailUrl.replace(/^\//, "") : ""
+                // Feed rows carry their own (mirrored) image URLs
+                image: manga.bannerUrl ?? (manga.thumbnailUrl ? serverURL + manga.thumbnailUrl.replace(/^\//, "") : ""),
+                subtitle: manga.subtitle
             }));
         }
         metadata = hasNextPage ? { page: page + 1 } : undefined;
