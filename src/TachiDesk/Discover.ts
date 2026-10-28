@@ -252,6 +252,68 @@ async function withBannerArt(requestManager: RequestManager, mangas: any[]): Pro
     return [...withBanner, ...rest].slice(0, HERO_SIZE)
 }
 
+// ! Precached feed
+
+// manga-feed (feed/ in this repo, runs on the NAS next to Suwayomi) rebuilds
+// every row every few hours with mirrored covers and rendered hero art. One
+// LAN request replaces ~20 live scrapes; the live rows above are the fallback.
+const FEED_PORT = 4580
+
+export interface FeedRow {
+    key: string
+    title: string
+    style: DiscoverRowStyle
+    items: { id: string, title: string, image: string, subtitle?: string }[]
+}
+
+export function feedBaseURL(serverURL: string): string {
+    const match = serverURL.match(/^(https?:\/\/[^\/:]+)/)
+    return match ? `${match[1]}:${FEED_PORT}/` : ""
+}
+
+export async function fetchFeedRows(requestManager: RequestManager, serverURL: string): Promise<FeedRow[] | undefined> {
+    const base = feedBaseURL(serverURL)
+    if (!base) return undefined
+    try {
+        const response = await requestManager.schedule(App.createRequest({ url: base + "feed.json", method: "GET" }), 0)
+        if (response.status !== 200) return undefined
+        const feed = JSON.parse(response.data ?? "")
+        const rows: FeedRow[] = feed.rows ?? []
+        // Image paths in the feed are relative to the feed server
+        return rows.map(row => ({
+            ...row,
+            items: row.items.map(item => ({ ...item, image: base + item.image }))
+        }))
+    } catch {
+        return undefined
+    }
+}
+
+const GQL_LIBRARY_IDS = `
+    query LibraryIds {
+        mangas(condition: { inLibrary: true }) {
+            nodes { id }
+        }
+    }
+`
+
+// The feed is library-agnostic; hide library series on the phone instead
+export async function fetchLibraryIds(stateManager: SourceStateManager, requestManager: RequestManager): Promise<Set<string>> {
+    try {
+        const res = await graphqlRequest(stateManager, requestManager, GQL_LIBRARY_IDS)
+        return new Set(res.data.mangas.nodes.map((node: any) => String(node.id)))
+    } catch {
+        return new Set()
+    }
+}
+
+// Shape feed items like the GraphQL mangas the tile builder already handles
+export function feedRowMangas(row: FeedRow, libraryIds: Set<string>): any[] {
+    return row.items
+        .filter(item => !libraryIds.has(item.id))
+        .map(item => ({ id: item.id, title: item.title, bannerUrl: item.image, subtitle: item.subtitle }))
+}
+
 // ! Recently read
 
 const GQL_RECENTLY_READ = `
