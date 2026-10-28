@@ -232,21 +232,27 @@ def warm_series(rows):
     rows go first; series refreshed within WARM_MAX_AGE_HOURS are skipped.
     """
     ordered = list(dict.fromkeys(int(item["id"]) for row in rows for item in row["items"]))
-    fetched = {}
+    details, chapters = {}, {}
     for i in range(0, len(ordered), 200):
-        nodes = gql("query($ids: [Int!]) { mangas(filter: { id: { in: $ids } }) { nodes { id lastFetchedAt } } }",
+        nodes = gql("query($ids: [Int!]) { mangas(filter: { id: { in: $ids } }) { nodes { id lastFetchedAt chaptersLastFetchedAt } } }",
                     {"ids": ordered[i:i + 200]})["mangas"]["nodes"]
-        fetched.update({n["id"]: int(n["lastFetchedAt"] or 0) for n in nodes})
+        details.update({n["id"]: int(n["lastFetchedAt"] or 0) for n in nodes})
+        chapters.update({n["id"]: int(n["chaptersLastFetchedAt"] or 0) for n in nodes})
+    # Details and chapters age separately (opening a series on the phone fetches details alone)
     cutoff = time.time() - WARM_MAX_AGE_HOURS * 3600
-    stale = [mid for mid in ordered if fetched.get(mid, 0) < cutoff]
+    stale = [mid for mid in ordered if details.get(mid, 0) < cutoff or chapters.get(mid, 0) < cutoff]
     started, warmed = time.time(), 0
-    for mid in stale:
+    for n, mid in enumerate(stale, 1):
         try:
-            gql("mutation($id: Int!) { fetchManga(input: { id: $id }) { manga { id } } }", {"id": mid})
-            gql("mutation($id: Int!) { fetchChapters(input: { mangaId: $id }) { chapters { id } } }", {"id": mid})
+            if details.get(mid, 0) < cutoff:
+                gql("mutation($id: Int!) { fetchManga(input: { id: $id }) { manga { id } } }", {"id": mid})
+            if chapters.get(mid, 0) < cutoff:
+                gql("mutation($id: Int!) { fetchChapters(input: { mangaId: $id }) { chapters { id } } }", {"id": mid})
             warmed += 1
         except Exception as e:
             log(f"warm {mid} failed: {e}")
+        if n % 50 == 0:
+            log(f"warming: {n}/{len(stale)} in {time.time() - started:.0f}s")
     log(f"warmed {warmed}/{len(stale)} series ({len(ordered) - len(stale)} already fresh) in {time.time() - started:.0f}s")
 
 
