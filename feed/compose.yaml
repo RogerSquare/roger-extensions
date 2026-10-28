@@ -11,6 +11,7 @@ services:
     environment:
       SUWAYOMI_URL: http://10.0.0.145:4567
       REFRESH_HOURS: "6"
+      DEDUPE_DRY_RUN: "false" # automatic: keep the best copy, remove the rest (report at :4580/duplicates.html)
     volumes:
       - /volume1/docker/manga-feed/data:/data
     restart: unless-stopped

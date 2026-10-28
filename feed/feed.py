@@ -11,6 +11,7 @@ import base64
 import io
 import json
 import os
+import re
 import threading
 import time
 import traceback
@@ -20,12 +21,19 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 from PIL import Image
 
+from dedupe import Deduper, normalize
+
 SUWAYOMI_URL = os.environ.get("SUWAYOMI_URL", "http://10.0.0.145:4567").rstrip("/")
 AUTH = base64.b64encode(f"{os.environ['AUTH_USERNAME']}:{os.environ['AUTH_PASSWORD']}".encode()).decode()
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
 PORT = int(os.environ.get("PORT", "4580"))
 REFRESH_HOURS = float(os.environ.get("REFRESH_HOURS", "6"))
 WARM_MAX_AGE_HOURS = float(os.environ.get("WARM_MAX_AGE_HOURS", "20"))
+DEDUPE_MINUTES = float(os.environ.get("DEDUPE_MINUTES", "5"))
+DEDUPE_DRY_RUN = os.environ.get("DEDUPE_DRY_RUN", "true").lower() != "false"
+SOURCE_LANG = os.environ.get("SOURCE_LANG", "en")
+# Copycat sites and the empty local source never get rows
+SKIP_SOURCES = [s.strip() for s in os.environ.get("SKIP_SOURCES", "Local source,Bbato").split(",") if s.strip()]
 SOURCE_NAME = os.environ.get("DISCOVER_SOURCE", "Weeb Central")
 USER_AGENT = "manga-feed/1.0 (+https://github.com/RogerSquare/roger-extensions)"
 
@@ -117,13 +125,40 @@ def filter_changes(filters, row):
             + [change for kind in row.get("types", []) for change in group("Series Type", kind, {"checkBoxState": True})])
 
 
+def other_sources(curated_id):
+    """Every other installed source in SOURCE_LANG, so new extensions get rows (and pre-fetching) automatically."""
+    nodes = gql("{ sources { nodes { id displayName lang supportsLatest } } }")["sources"]["nodes"]
+    return [n for n in nodes if n["id"] != curated_id and n["lang"] == SOURCE_LANG
+            and "unoriginal" not in n["displayName"].lower()
+            and not any(n["displayName"].startswith(skip) for skip in SKIP_SOURCES)]
+
+
+def source_rows(sources):
+    rows = []
+    for src in sources:
+        name = re.sub(r"\s*\([A-Z-]+\)$", "", src["displayName"])
+        rows.append({"key": f"src{src['id']}pop", "title": f"Popular on {name}", "style": "singleRowNormal",
+                     "source": src["id"], "listing": "POPULAR"})
+        if src["supportsLatest"]:
+            rows.append({"key": f"src{src['id']}new", "title": f"Latest on {name}", "style": "singleRowNormal",
+                         "source": src["id"], "listing": "LATEST"})
+    return rows
+
+
 def fetch_row(source_id, filters, row):
     mangas, seen = [], set()
     for page in range(1, ROW_PAGES + 1):
-        data = gql("""mutation($s: LongString!, $p: Int!, $f: [FilterChangeInput!]) {
-            fetchSourceManga(input: { source: $s, type: SEARCH, page: $p, query: "", filters: $f }) {
-                hasNextPage mangas { id title thumbnailUrl } } }""",
-                   {"s": source_id, "p": page, "f": filter_changes(filters, row)})["fetchSourceManga"]
+        if row.get("listing"):
+            # Other sources: their own Popular/Latest listing, no curated filters
+            data = gql("""mutation($s: LongString!, $t: FetchSourceMangaType!, $p: Int!) {
+                fetchSourceManga(input: { source: $s, type: $t, page: $p }) {
+                    hasNextPage mangas { id title thumbnailUrl } } }""",
+                       {"s": row["source"], "t": row["listing"], "p": page})["fetchSourceManga"]
+        else:
+            data = gql("""mutation($s: LongString!, $p: Int!, $f: [FilterChangeInput!]) {
+                fetchSourceManga(input: { source: $s, type: SEARCH, page: $p, query: "", filters: $f }) {
+                    hasNextPage mangas { id title thumbnailUrl } } }""",
+                       {"s": source_id, "p": page, "f": filter_changes(filters, row)})["fetchSourceManga"]
         for m in data["mangas"]:
             if m["id"] not in seen:
                 seen.add(m["id"])
@@ -153,6 +188,31 @@ def anilist_lookup(titles):
         media = ((data.get(f"m{i}") or {}).get("media") or [None])[0]
         if media:
             out[t] = media
+    return out
+
+
+def anilist_ids(titles):
+    """AniList id per title, for duplicate matching across sources; None when unsure.
+
+    Only trusted when the query title is one of the match's own titles or
+    synonyms, so an obscure title can't collapse into a popular series.
+    """
+    out = {}
+    for start in range(0, len(titles), 20):
+        batch = titles[start:start + 20]
+        aliases = " ".join(
+            f"m{i}: Page(perPage: 1) {{ media(search: {json.dumps(t)}, type: MANGA, sort: SEARCH_MATCH) "
+            f"{{ id title {{ romaji english native }} synonyms }} }}" for i, t in enumerate(batch))
+        try:
+            data = http_json("https://graphql.anilist.co", {"query": f"query {{ {aliases} }}"}).get("data") or {}
+        except Exception as e:
+            log(f"anilist ids failed: {e}")
+            return out  # unresolved titles retry next pass
+        for i, t in enumerate(batch):
+            media = ((data.get(f"m{i}") or {}).get("media") or [None])[0]
+            names = {normalize(n) for n in [*(media or {}).get("title", {}).values(), *(media or {}).get("synonyms", [])] if n}
+            out[t] = media["id"] if media and normalize(t) in names else None
+        time.sleep(1)  # AniList allows ~90 requests/min
     return out
 
 
@@ -195,7 +255,7 @@ def build_feed():
     source_id = find_source()
     filters = source_filters(source_id)
     rows_out = []
-    for row in ROWS:
+    for row in ROWS + source_rows(other_sources(source_id)):
         try:
             mangas = fetch_row(source_id, filters, row)
         except Exception as e:
@@ -262,6 +322,16 @@ def warm_series(rows):
     log(f"warmed {warmed}/{len(stale)} series ({len(ordered) - len(stale)} already fresh) in {time.time() - started:.0f}s")
 
 
+def dedupe_loop():
+    deduper = Deduper(gql, anilist_ids, DATA_DIR, log, DEDUPE_DRY_RUN)
+    while True:
+        try:
+            deduper.run()
+        except Exception:
+            log("dedupe failed:\n" + traceback.format_exc())
+        time.sleep(DEDUPE_MINUTES * 60)
+
+
 def builder_loop():
     while True:
         try:
@@ -284,5 +354,7 @@ class FeedHandler(SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     os.makedirs(DATA_DIR, exist_ok=True)
     threading.Thread(target=builder_loop, daemon=True).start()
-    log(f"serving {DATA_DIR} on :{PORT}; refresh every {REFRESH_HOURS}h")
+    threading.Thread(target=dedupe_loop, daemon=True).start()
+    log(f"serving {DATA_DIR} on :{PORT}; refresh every {REFRESH_HOURS}h; dedupe every {DEDUPE_MINUTES}m"
+        f"{' (dry run)' if DEDUPE_DRY_RUN else ''}")
     ThreadingHTTPServer(("0.0.0.0", PORT), partial(FeedHandler, directory=DATA_DIR)).serve_forever()

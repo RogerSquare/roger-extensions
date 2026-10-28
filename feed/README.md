@@ -6,6 +6,20 @@ fetch live) and mirrors covers, then has Suwayomi pre-fetch details and
 chapter lists for every listed series. The phone loads the home page with one
 LAN request, and opening a series doesn't wait on a live scrape.
 
+Every installed source (in `SOURCE_LANG`, minus `SKIP_SOURCES` and copycats)
+also gets Popular/Latest rows, pre-fetched the same way.
+
+`dedupe.py` checks the library every 5 minutes for the same series from two
+sources (normalized title, or AniList id when the edition markers match) and
+keeps the best copy: official sources first if they have at least 90% of the
+chapters, then the `SOURCE_PRIORITY` order. Losers hand over read progress and
+lose their downloads. Report: `http://10.0.0.145:4580/duplicates.html`.
+`DEDUPE_DRY_RUN=true` reports without removing anything.
+
+`backfill.py` is the Suwayomi back-catalog downloader (deployed separately at
+`/volume1/docker/suwayomi/backfill/`); it waits 15 minutes after a series is
+added so a duplicate is removed before it downloads.
+
 ## Deploy (rootnas)
 
 ```bash
