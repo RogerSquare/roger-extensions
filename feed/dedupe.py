@@ -150,7 +150,11 @@ class Deduper:
 
     def run(self):
         history = self._load(self.history_path, [])
-        found = self.groups(self.library())
+        library = self.library()
+        # Published for Back Room's feed, which hides anything already here
+        self._save(os.path.join(os.path.dirname(self.history_path), "library-titles.json"),
+                   sorted({m["title"] for m in library}))
+        found = self.groups(library)
         for group in found:
             winner = pick_winner(group)
             for loser in [m for m in group if m["id"] != winner["id"]]:

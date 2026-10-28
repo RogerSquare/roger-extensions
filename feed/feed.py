@@ -31,7 +31,13 @@ REFRESH_HOURS = float(os.environ.get("REFRESH_HOURS", "6"))
 WARM_MAX_AGE_HOURS = float(os.environ.get("WARM_MAX_AGE_HOURS", "20"))
 DEDUPE_MINUTES = float(os.environ.get("DEDUPE_MINUTES", "5"))
 DEDUPE_DRY_RUN = os.environ.get("DEDUPE_DRY_RUN", "true").lower() != "false"
-SOURCE_LANG = os.environ.get("SOURCE_LANG", "en")
+# Comma-separated; Back Room adds "all" for multi-language adult sources
+SOURCE_LANGS = [lang.strip() for lang in os.environ.get("SOURCE_LANG", "en").split(",") if lang.strip()]
+# Back Room: curated rows must also carry one of these Weeb Central tags
+# (its "Adult Content" flag alone includes mature-but-not-explicit series)
+EXPLICIT_TAGS = [t.strip() for t in os.environ.get("EXPLICIT_TAGS", "").split(",") if t.strip()]
+# Back Room: drop anything already in Panelhouse's library (its feed publishes the titles)
+EXCLUDE_TITLES_URL = os.environ.get("EXCLUDE_TITLES_URL", "")
 # Copycat sites, the empty local source, and sources the user rejected (Mangago) never feed rows
 SKIP_SOURCES = [s.strip() for s in os.environ.get("SKIP_SOURCES", "Local source,Bbato,Mangago").split(",") if s.strip()]
 SOURCE_NAME = os.environ.get("DISCOVER_SOURCE", "Weeb Central")
@@ -100,8 +106,19 @@ def gql(query, variables=None):
 # ---------------------------------------------------------------- rows
 
 def find_source():
+    """The curated source (id, name), or (None, "") when it isn't installed: rows then come from the other sources alone."""
     nodes = gql("{ sources { nodes { id displayName } } }")["sources"]["nodes"]
-    return next(n["id"] for n in nodes if n["displayName"].startswith(SOURCE_NAME))
+    return next(((n["id"], n["displayName"]) for n in nodes if n["displayName"].startswith(SOURCE_NAME)), (None, ""))
+
+
+def excluded_titles():
+    if not EXCLUDE_TITLES_URL:
+        return set()
+    try:
+        return {title_key(t) for t in http_json(EXCLUDE_TITLES_URL, timeout=20)}
+    except Exception as e:
+        # Never publish a Back Room feed that might show Panelhouse series
+        raise RuntimeError(f"exclude list unavailable ({EXCLUDE_TITLES_URL}): {e}")
 
 
 def source_filters(source_id):
@@ -138,7 +155,7 @@ def filter_changes(filters, row):
 def other_sources(curated_id):
     """Every other installed source in SOURCE_LANG, so new extensions get rows (and pre-fetching) automatically."""
     nodes = gql("{ sources { nodes { id displayName lang supportsLatest } } }")["sources"]["nodes"]
-    return [n for n in nodes if n["id"] != curated_id and n["lang"] == SOURCE_LANG
+    return [n for n in nodes if n["id"] != curated_id and n["lang"] in SOURCE_LANGS
             and "unoriginal" not in n["displayName"].lower()
             and not any(n["displayName"].startswith(skip) for skip in SKIP_SOURCES)]
 
@@ -205,13 +222,38 @@ def merge_ranked(lists, limit):
     return [m for _, m in picked][:limit]
 
 
+def tag_include(filters, tag):
+    for i, f in enumerate(filters):
+        if f["type"] == "GroupFilter" and f["name"] == "Tags" and tag in f["children"]:
+            return [{"position": i, "groupChange": {"position": f["children"].index(tag), "triState": "INCLUDE"}}]
+    return []
+
+
 def fetch_row(source_id, filters, row):
+    if source_id is None:
+        return []
+    if EXPLICIT_TAGS:
+        # Included tags are ANDed by Weeb Central, so "any explicit tag" is one
+        # query per tag, interleaved; a genre row ANDs its genre with each
+        lists = [fetch_filtered(source_id, filters, row, extra_tag) for extra_tag in EXPLICIT_TAGS]
+        mangas, seen = [], set()
+        for rank in range(max(map(len, lists), default=0)):
+            for lst in lists:
+                if rank < len(lst) and lst[rank]["id"] not in seen:
+                    seen.add(lst[rank]["id"])
+                    mangas.append(lst[rank])
+        return mangas
+    return fetch_filtered(source_id, filters, row)
+
+
+def fetch_filtered(source_id, filters, row, extra_tag=None):
+    changes = filter_changes(filters, row) + (tag_include(filters, extra_tag) if extra_tag else [])
     mangas, seen = [], set()
     for page in range(1, ROW_PAGES + 1):
         data = gql("""mutation($s: LongString!, $p: Int!, $f: [FilterChangeInput!]) {
             fetchSourceManga(input: { source: $s, type: SEARCH, page: $p, query: "", filters: $f }) {
                 hasNextPage mangas { id title thumbnailUrl } } }""",
-                   {"s": source_id, "p": page, "f": filter_changes(filters, row)})["fetchSourceManga"]
+                   {"s": source_id, "p": page, "f": changes})["fetchSourceManga"]
         for m in data["mangas"]:
             if m["id"] not in seen:
                 seen.add(m["id"])
@@ -305,10 +347,9 @@ def save_jpeg(img, dest, quality):
 
 def build_feed():
     started = time.time()
-    source_id = find_source()
-    curated_name = next(n["displayName"] for n in gql("{ sources { nodes { id displayName } } }")["sources"]["nodes"]
-                        if n["id"] == source_id)
-    filters = source_filters(source_id)
+    source_id, curated_name = find_source()
+    filters = source_filters(source_id) if source_id else []
+    excluded = excluded_titles()
 
     # Every other installed source contributes its own Popular and Latest
     # listings, merged into the curated categories instead of rows of its own
@@ -331,7 +372,10 @@ def build_feed():
             log(f"row {row['key']} failed: {e}")
             continue
         extra = [[m for m in lst if wants(row, m, genres)] for lst in pool.get(row.get("merge"), [])]
-        mangas = merge_ranked([curated, *extra], HERO_ITEMS if row.get("subtitles") else ROW_LIMIT)
+        mangas = merge_ranked([[m for m in lst if title_key(m["title"]) not in excluded] for lst in [curated, *extra]],
+                              HERO_ITEMS if row.get("subtitles") else ROW_LIMIT)
+        if not mangas:
+            continue  # e.g. Now an Anime with no curated source installed
         items = []
         if row.get("subtitles"):
             candidates = mangas[:HERO_ITEMS]
