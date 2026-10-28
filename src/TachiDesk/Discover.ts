@@ -159,6 +159,99 @@ export async function fetchDiscoverRow(
     }
 }
 
+// ! Row cache + concurrency
+
+// Every row waits in Suwayomi's per-source queue (shared with the downloader),
+// so firing all rows at once pushed the slowest past the request timeout and
+// they rendered empty. Cap parallel fetches and serve rows from a cache.
+const MAX_PARALLEL_FETCHES = 3
+const ROW_CACHE_TTL_MS = 6 * 60 * 60 * 1000
+
+let activeFetches = 0
+const waitingFetches: Array<() => void> = []
+
+async function limited<T>(task: () => Promise<T>): Promise<T> {
+    if (activeFetches >= MAX_PARALLEL_FETCHES) {
+        await new Promise<void>(resolve => waitingFetches.push(resolve))
+    }
+    activeFetches++
+    try {
+        return await task()
+    } finally {
+        activeFetches--
+        waitingFetches.shift()?.()
+    }
+}
+
+export async function getDiscoverRowMangas(
+    stateManager: SourceStateManager,
+    requestManager: RequestManager,
+    sourceId: string,
+    row: DiscoverRow
+): Promise<any[]> {
+    const cacheKey = "discover_cache_" + row.key
+    const cached = await stateManager.retrieve(cacheKey) as { at: number, mangas: any[] } | undefined
+    if (cached && Date.now() - cached.at < ROW_CACHE_TTL_MS) return cached.mangas
+
+    try {
+        let mangas = (await limited(() => fetchDiscoverRow(stateManager, requestManager, sourceId, row, 1))).mangas
+        if (row.style === "featured") {
+            mangas = await withBannerArt(requestManager, mangas)
+        }
+        await stateManager.store(cacheKey, { at: Date.now(), mangas })
+        return mangas
+    } catch (error) {
+        // A stale row beats an empty one
+        if (cached) return cached.mangas
+        throw error
+    }
+}
+
+// ! Hero banner art
+
+// Weeb Central only has portrait covers; AniList has the wide banner art and
+// scores a Crunchyroll-style hero needs. Page() search returns an empty list on
+// a miss, where a bare Media() search fails the whole batch.
+const ANILIST_URL = "https://graphql.anilist.co"
+const HERO_SIZE = 10
+
+async function withBannerArt(requestManager: RequestManager, mangas: any[]): Promise<any[]> {
+    const candidates = mangas.slice(0, HERO_SIZE * 2)
+    const aliases = candidates.map((manga, i) =>
+        `m${i}: Page(perPage: 1) { media(search: ${JSON.stringify(manga.title)}, type: MANGA, sort: SEARCH_MATCH) { bannerImage genres averageScore } }`
+    )
+
+    let data: any = {}
+    try {
+        const response = await requestManager.schedule(App.createRequest({
+            url: ANILIST_URL,
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Accept": "application/json" },
+            data: JSON.stringify({ query: `query { ${aliases.join(" ")} }` })
+        }), 1)
+        data = JSON.parse(response.data ?? "{}").data ?? {}
+    } catch {
+        // AniList is decoration only; fall back to plain covers
+        return mangas
+    }
+
+    const enriched = candidates.map((manga, i) => {
+        const media = data[`m${i}`]?.media?.[0]
+        if (!media) return manga
+        const score = media.averageScore ? `★ ${media.averageScore}%` : ""
+        return {
+            ...manga,
+            bannerUrl: media.bannerImage ?? undefined,
+            subtitle: [score, ...(media.genres ?? []).slice(0, 3)].filter(Boolean).join(" · ")
+        }
+    })
+
+    // Lead with series that have real banner art, like Crunchyroll's carousel
+    const withBanner = enriched.filter(manga => manga.bannerUrl)
+    const rest = enriched.filter(manga => !manga.bannerUrl)
+    return [...withBanner, ...rest].slice(0, HERO_SIZE)
+}
+
 // ! Recently read
 
 const GQL_RECENTLY_READ = `
