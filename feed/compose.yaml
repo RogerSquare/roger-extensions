@@ -1,0 +1,17 @@
+# Deployed on rootnas at /volume1/docker/manga-feed (CLI docker compose, not Container Manager)
+services:
+  manga-feed:
+    build: .
+    image: manga-feed:local
+    container_name: manga-feed
+    ports:
+      - 4580:4580
+    env_file:
+      - /volume1/docker/suwayomi/.env # AUTH_USERNAME / AUTH_PASSWORD, shared with Suwayomi
+      - .env                          # optional TMDB_TOKEN for anime backdrops
+    environment:
+      SUWAYOMI_URL: http://10.0.0.145:4567
+      REFRESH_HOURS: "6"
+    volumes:
+      - /volume1/docker/manga-feed/data:/data
+    restart: unless-stopped
