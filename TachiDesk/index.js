@@ -3095,7 +3095,7 @@ exports.v1Migration = v1Migration;
 },{"buffer":63}],66:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.fetchRecentlyRead = exports.feedRowMangas = exports.fetchLibraryIds = exports.fetchFeedRows = exports.feedBaseURL = exports.getDiscoverRowMangas = exports.fetchDiscoverRow = exports.findDiscoverSource = exports.getDiscoverRow = exports.DISCOVER_ROWS = exports.DISCOVER_SOURCE_NAME = void 0;
+exports.fetchRecentlyRead = exports.feedRowMangas = exports.fetchLibraryIds = exports.normalizeTitle = exports.fetchFeedRows = exports.feedBaseURL = exports.getDiscoverRowMangas = exports.fetchDiscoverRow = exports.findDiscoverSource = exports.getDiscoverRow = exports.DISCOVER_ROWS = exports.DISCOVER_SOURCE_NAME = void 0;
 const Common_1 = require("./Common");
 // Crunchyroll-style discovery rows, built from one Suwayomi source's own
 // filters (sort, genre tags, anime adaptation, adult content). Filters are
@@ -3287,25 +3287,37 @@ exports.fetchFeedRows = fetchFeedRows;
 const GQL_LIBRARY_IDS = `
     query LibraryIds {
         mangas(condition: { inLibrary: true }) {
-            nodes { id }
+            nodes { id title }
         }
     }
 `;
-// The feed is library-agnostic; hide library series on the phone instead
+// Same rules as feed/dedupe.py normalize(), so "Spy × Family" from one source
+// matches "Spy x Family" from another
+function normalizeTitle(title) {
+    return title.replace(/×/g, "x").normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase()
+        .replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim().replace(/^the /, "");
+}
+exports.normalizeTitle = normalizeTitle;
+// The feed is library-agnostic; hide library series on the phone instead,
+// by id and by title so a copy on another source is hidden too
 async function fetchLibraryIds(stateManager, requestManager) {
     try {
         const res = await (0, Common_1.graphqlRequest)(stateManager, requestManager, GQL_LIBRARY_IDS);
-        return new Set(res.data.mangas.nodes.map((node) => String(node.id)));
+        const nodes = res.data.mangas.nodes;
+        return {
+            ids: new Set(nodes.map((node) => String(node.id))),
+            titles: new Set(nodes.map((node) => normalizeTitle(node.title)))
+        };
     }
     catch {
-        return new Set();
+        return { ids: new Set(), titles: new Set() };
     }
 }
 exports.fetchLibraryIds = fetchLibraryIds;
 // Shape feed items like the GraphQL mangas the tile builder already handles
-function feedRowMangas(row, libraryIds) {
+function feedRowMangas(row, library) {
     return row.items
-        .filter(item => !libraryIds.has(item.id))
+        .filter(item => !library.ids.has(item.id) && !library.titles.has(normalizeTitle(item.title)))
         .map(item => ({ id: item.id, title: item.title, imageUrl: item.image, subtitle: item.subtitle }));
 }
 exports.feedRowMangas = feedRowMangas;
@@ -3734,7 +3746,7 @@ exports.TachiDeskInfo = {
     description: 'Paperback extension which aims to bridge all of Tachidesks features and the Paperback App. (GraphQL)',
     icon: 'icon.png',
     name: 'Tachidesk',
-    version: '3.4.4',
+    version: '3.5.0',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: types_1.ContentRating.EVERYONE,
     sourceTags: [
@@ -4138,7 +4150,7 @@ class TachiDesk {
             : await (0, Common_1.fetchServerSources)(this.stateManager, this.requestManager);
         const discoverSource = (0, Discover_1.findDiscoverSource)(knownSources);
         // The NAS feed has every discovery row precached; live rows are the fallback
-        const [feedRows, libraryIds] = await Promise.all([
+        const [feedRows, library] = await Promise.all([
             (0, Discover_1.fetchFeedRows)(this.requestManager, serverURL),
             (0, Discover_1.fetchLibraryIds)(this.stateManager, this.requestManager)
         ]);
@@ -4264,7 +4276,7 @@ class TachiDesk {
                     if (section.type === "feed") {
                         const row = feedRows?.find(feedRow => feedRow.key === section.id);
                         if (row)
-                            mangas = (0, Discover_1.feedRowMangas)(row, libraryIds);
+                            mangas = (0, Discover_1.feedRowMangas)(row, library);
                     }
                     else if (section.type === "discover") {
                         const row = (0, Discover_1.getDiscoverRow)(String(section.id));
@@ -4338,13 +4350,13 @@ class TachiDesk {
         switch (type) {
             case "feed": {
                 // The feed already holds a full row (two source pages); no further paging
-                const [feedRows, libraryIds] = await Promise.all([
+                const [feedRows, library] = await Promise.all([
                     (0, Discover_1.fetchFeedRows)(this.requestManager, serverURL),
                     (0, Discover_1.fetchLibraryIds)(this.stateManager, this.requestManager)
                 ]);
                 const row = feedRows?.find(feedRow => feedRow.key === sourceId);
                 if (row)
-                    mangas = (0, Discover_1.feedRowMangas)(row, libraryIds);
+                    mangas = (0, Discover_1.feedRowMangas)(row, library);
                 break;
             }
             case "discover": {
