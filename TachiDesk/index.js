@@ -3730,7 +3730,7 @@ exports.TachiDeskInfo = {
     description: 'Paperback extension which aims to bridge all of Tachidesks features and the Paperback App. (GraphQL)',
     icon: 'icon.png',
     name: 'Tachidesk',
-    version: '3.4.2',
+    version: '3.4.3',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: types_1.ContentRating.EVERYONE,
     sourceTags: [
@@ -3760,6 +3760,7 @@ const GQL_GET_MANGA = `
             status
             thumbnailUrl
             lastFetchedAt
+            chaptersLastFetchedAt
         }
     }
 `;
@@ -4006,25 +4007,28 @@ class TachiDesk {
     }
     async getChapters(mangaId) {
         const mangaIdInt = parseInt(mangaId);
-        // Get manga to check lastFetchedAt
+        // Get manga to check when details and chapters were last fetched
         const mangaResult = await (0, Common_1.graphqlRequest)(this.stateManager, this.requestManager, GQL_GET_MANGA, {
             id: mangaIdInt
         });
         const manga = mangaResult.data.manga;
-        // If last fetched more than a day ago, fetch online
-        const lastFetched = parseInt(manga.lastFetchedAt ?? "0");
-        if (lastFetched < Math.floor(Date.now() / 1000) - 86400) {
-            try {
+        // Details and chapters age separately: getMangaDetails fetches details
+        // alone, so a fresh lastFetchedAt says nothing about the chapter list
+        const dayAgo = Math.floor(Date.now() / 1000) - 86400;
+        try {
+            if (parseInt(manga.lastFetchedAt ?? "0") < dayAgo) {
                 await (0, Common_1.graphqlRequest)(this.stateManager, this.requestManager, GQL_GET_MANGA_ONLINE_FETCH, {
                     id: mangaIdInt
                 });
+            }
+            if (parseInt(manga.chaptersLastFetchedAt ?? "0") < dayAgo) {
                 await (0, Common_1.graphqlRequest)(this.stateManager, this.requestManager, GQL_FETCH_CHAPTERS, {
                     mangaId: mangaIdInt
                 });
             }
-            catch (e) {
-                console.log(`Error during online fetch: ${e}`);
-            }
+        }
+        catch (e) {
+            console.log(`Error during online fetch: ${e}`);
         }
         const chaptersResult = await (0, Common_1.graphqlRequest)(this.stateManager, this.requestManager, GQL_GET_CHAPTERS, {
             mangaId: mangaIdInt
