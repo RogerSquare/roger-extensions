@@ -77,7 +77,7 @@ export const TachiDeskInfo: SourceInfo = {
     description: 'Paperback extension which aims to bridge all of Tachidesks features and the Paperback App. (GraphQL)',
     icon: 'icon.png',
     name: 'Tachidesk',
-    version: '3.4.0',
+    version: '3.4.1',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: ContentRating.EVERYONE,
     sourceTags: [
@@ -326,9 +326,24 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
     }
 
     async getMangaDetails(mangaId: string): Promise<SourceManga> {
-        const result = await graphqlRequest(this.stateManager, this.requestManager, GQL_GET_MANGA, {
+        let result = await graphqlRequest(this.stateManager, this.requestManager, GQL_GET_MANGA, {
             id: parseInt(mangaId)
         });
+
+        // Browse/search results are stubs until fetched once (no description,
+        // author or status); the feed pre-fetches its series, search hits don't
+        if (parseInt(result.data.manga.lastFetchedAt ?? "0") === 0) {
+            try {
+                await graphqlRequest(this.stateManager, this.requestManager, GQL_GET_MANGA_ONLINE_FETCH, {
+                    id: parseInt(mangaId)
+                });
+                result = await graphqlRequest(this.stateManager, this.requestManager, GQL_GET_MANGA, {
+                    id: parseInt(mangaId)
+                });
+            } catch (e) {
+                console.log(`Error during online details fetch: ${e}`);
+            }
+        }
 
         const manga = result.data.manga;
         const serverURL = await getServerURL(this.stateManager);
