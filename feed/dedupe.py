@@ -31,8 +31,13 @@ EDITION_MARKERS = {"color", "colored", "colour", "coloured", "official", "remake
 def normalize(title):
     # "×" is a common stand-in for "x" (Spy × Family, Hunter × Hunter)
     title = unicodedata.normalize("NFKD", title.replace("×", "x")).encode("ascii", "ignore").decode().lower()
-    title = re.sub(r"[^a-z0-9]+", " ", title.replace("&", " and ")).strip()
-    return re.sub(r"^the ", "", title)
+    ascii_title = re.sub(r"[^a-z0-9]+", " ", title.replace("&", " and ")).strip()
+    return re.sub(r"^the ", "", ascii_title)
+
+
+def title_key(title):
+    """normalize(), but never empty: an all-CJK title would otherwise collide with every other one."""
+    return normalize(title) or title.strip().lower()
 
 
 def editions(title):
@@ -103,7 +108,7 @@ class Deduper:
 
         by_key = {}
         for m in library:
-            keys = [("title", normalize(m["title"]))]
+            keys = [("title", title_key(m["title"]))]
             if cache.get(m["title"]):
                 keys.append(("anilist", cache[m["title"]], tuple(sorted(editions(m["title"])))))
             for k in keys:

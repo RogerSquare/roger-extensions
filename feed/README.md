@@ -6,8 +6,12 @@ fetch live) and mirrors covers, then has Suwayomi pre-fetch details and
 chapter lists for every listed series. The phone loads the home page with one
 LAN request, and opening a series doesn't wait on a live scrape.
 
-Every installed source (in `SOURCE_LANG`, minus `SKIP_SOURCES` and copycats)
-also gets Popular/Latest rows, pre-fetched the same way.
+Every other installed source (in `SOURCE_LANG`, minus `SKIP_SOURCES` and
+copycats) is merged into those same categories: its Popular listing into
+Trending / Most Popular / the genre rows (by its genre tags) / Popular
+Webtoons (webtoon sources or manhwa/manhua tags), its Latest listing into
+Newly Added / New Webtoons. Rows interleave sources rank by rank and hold one
+copy per title, from the highest-priority source.
 
 `dedupe.py` checks the library every 5 minutes for the same series from two
 sources (normalized title, or AniList id when the edition markers match) and
