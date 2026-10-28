@@ -21,7 +21,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 from PIL import Image
 
-from dedupe import Deduper, normalize
+from dedupe import Deduper, source_rank, title_key
 
 SUWAYOMI_URL = os.environ.get("SUWAYOMI_URL", "http://10.0.0.145:4567").rstrip("/")
 AUTH = base64.b64encode(f"{os.environ['AUTH_USERNAME']}:{os.environ['AUTH_PASSWORD']}".encode()).decode()
@@ -39,6 +39,13 @@ USER_AGENT = "manga-feed/1.0 (+https://github.com/RogerSquare/roger-extensions)"
 
 HERO_ITEMS = 20
 ROW_PAGES = 2  # ~64 items, so rows stay full after the extension hides library series
+ROW_LIMIT = 96  # merged rows hold several sources' picks
+# Sources that are all (or nearly all) webtoons, plus genre tags that mark one
+WEBTOON_SOURCES = ["Webtoons.com", "Asura Scans", "Flame Comics", "Vortex Scans", "Manhua Plus",
+                   "Hive Scans", "Drake Scans", "Tapas"]
+WEBTOON_GENRES = {"manhwa", "manhua", "webtoon", "webtoons", "long strip", "web comic", "full color"}
+GENRE_ALIASES = {"sci fi": {"sci fi", "scifi", "science fiction"}, "historical": {"historical", "history"},
+                 "sports": {"sports", "sport"}}
 COVER_MAX_H = 900
 
 GENRES = ["Action", "Adventure", "Comedy", "Drama", "Fantasy", "Mystery", "Romance",
@@ -48,17 +55,18 @@ GENRES = ["Action", "Adventure", "Comedy", "Drama", "Fantasy", "Mystery", "Roman
 ROWS = [
     # Same large portrait tiles as Most Popular; the user preferred them to banner art
     {"key": "hero", "title": "Trending Now", "style": "singleRowLarge", "sort": "Popularity", "ongoing": True,
-     "subtitles": True},
-    {"key": "new", "title": "Newly Added", "style": "singleRowNormal", "sort": "Recently Added"},
-    {"key": "popular", "title": "Most Popular", "style": "singleRowLarge", "sort": "Popularity"},
+     "subtitles": True, "merge": "POPULAR"},
+    {"key": "new", "title": "Newly Added", "style": "singleRowNormal", "sort": "Recently Added", "merge": "LATEST"},
+    {"key": "popular", "title": "Most Popular", "style": "singleRowLarge", "sort": "Popularity", "merge": "POPULAR"},
+    # Other sources don't say whether a series has an anime, so this row stays Weeb Central only
     {"key": "anime", "title": "Now an Anime", "style": "singleRowNormal", "sort": "Popularity", "anime": True},
     # Webtoons: Korean manhwa and Chinese manhua (vertical-scroll, usually full color)
     {"key": "webtoonPopular", "title": "Popular Webtoons", "style": "singleRowNormal", "sort": "Popularity",
-     "types": ["Manhwa", "Manhua"]},
+     "types": ["Manhwa", "Manhua"], "merge": "POPULAR", "webtoon": True},
     {"key": "webtoonNew", "title": "New Webtoons", "style": "singleRowNormal", "sort": "Recently Added",
-     "types": ["Manhwa", "Manhua"]},
+     "types": ["Manhwa", "Manhua"], "merge": "LATEST", "webtoon": True},
 ] + [{"key": "genre" + "".join(c for c in g if c.isalpha()), "title": g, "style": "singleRowNormal",
-      "sort": "Popularity", "tag": g} for g in GENRES]
+      "sort": "Popularity", "tag": g, "merge": "POPULAR"} for g in GENRES]
 
 
 def log(msg):
@@ -133,32 +141,75 @@ def other_sources(curated_id):
             and not any(n["displayName"].startswith(skip) for skip in SKIP_SOURCES)]
 
 
-def source_rows(sources):
-    rows = []
-    for src in sources:
-        name = re.sub(r"\s*\([A-Z-]+\)$", "", src["displayName"])
-        rows.append({"key": f"src{src['id']}pop", "title": f"Popular on {name}", "style": "singleRowNormal",
-                     "source": src["id"], "listing": "POPULAR"})
-        if src["supportsLatest"]:
-            rows.append({"key": f"src{src['id']}new", "title": f"Latest on {name}", "style": "singleRowNormal",
-                         "source": src["id"], "listing": "LATEST"})
-    return rows
+def fetch_listing(source, kind):
+    """A source's own Popular or Latest listing (no curated filters)."""
+    mangas, seen = [], set()
+    for page in range(1, ROW_PAGES + 1):
+        data = gql("""mutation($s: LongString!, $t: FetchSourceMangaType!, $p: Int!) {
+            fetchSourceManga(input: { source: $s, type: $t, page: $p }) {
+                hasNextPage mangas { id title thumbnailUrl } } }""",
+                   {"s": source["id"], "t": kind, "p": page})["fetchSourceManga"]
+        for m in data["mangas"]:
+            if m["id"] not in seen:
+                seen.add(m["id"])
+                mangas.append({**m, "sourceName": source["displayName"]})
+        if not data["hasNextPage"]:
+            break
+    return mangas
+
+
+def tag_key(tag):
+    return re.sub(r"[^a-z0-9]+", " ", tag.lower()).strip()
+
+
+def genres_of(ids):
+    """Suwayomi genre tags per manga id; empty until the series has been fetched once."""
+    out = {}
+    for i in range(0, len(ids), 200):
+        nodes = gql("query($ids: [Int!]) { mangas(filter: { id: { in: $ids } }) { nodes { id genre } } }",
+                    {"ids": ids[i:i + 200]})["mangas"]["nodes"]
+        out.update({n["id"]: {tag_key(g) for g in n["genre"] or []} for n in nodes})
+    return out
+
+
+def wants(row, manga, genres):
+    tags = genres.get(manga["id"], set())
+    if row.get("webtoon"):
+        return any(manga["sourceName"].startswith(w) for w in WEBTOON_SOURCES) or bool(tags & WEBTOON_GENRES)
+    if row.get("tag"):
+        key = tag_key(row["tag"])
+        return bool(tags & GENRE_ALIASES.get(key, {key}))
+    return True
+
+
+def merge_ranked(lists, limit):
+    """Interleave ranked lists by position, one series per normalized title.
+
+    Order: each list's #1, then each list's #2, ..., in list order (the
+    curated source first). When two sources list the same series, the
+    higher-priority source's copy is kept (official first, then the dedupe
+    priority order), in the earliest position either copy reached.
+    """
+    ranked = sorted(((rank, i, source_rank(m["sourceName"]), m)
+                     for i, lst in enumerate(lists) for rank, m in enumerate(lst)), key=lambda t: (t[0], t[1]))
+    picked, slot = [], {}
+    for _, _, prio, m in ranked:
+        key = title_key(m["title"])
+        if key not in slot:
+            slot[key] = len(picked)
+            picked.append((prio, m))
+        elif prio < picked[slot[key]][0]:
+            picked[slot[key]] = (prio, m)
+    return [m for _, m in picked][:limit]
 
 
 def fetch_row(source_id, filters, row):
     mangas, seen = [], set()
     for page in range(1, ROW_PAGES + 1):
-        if row.get("listing"):
-            # Other sources: their own Popular/Latest listing, no curated filters
-            data = gql("""mutation($s: LongString!, $t: FetchSourceMangaType!, $p: Int!) {
-                fetchSourceManga(input: { source: $s, type: $t, page: $p }) {
-                    hasNextPage mangas { id title thumbnailUrl } } }""",
-                       {"s": row["source"], "t": row["listing"], "p": page})["fetchSourceManga"]
-        else:
-            data = gql("""mutation($s: LongString!, $p: Int!, $f: [FilterChangeInput!]) {
-                fetchSourceManga(input: { source: $s, type: SEARCH, page: $p, query: "", filters: $f }) {
-                    hasNextPage mangas { id title thumbnailUrl } } }""",
-                       {"s": source_id, "p": page, "f": filter_changes(filters, row)})["fetchSourceManga"]
+        data = gql("""mutation($s: LongString!, $p: Int!, $f: [FilterChangeInput!]) {
+            fetchSourceManga(input: { source: $s, type: SEARCH, page: $p, query: "", filters: $f }) {
+                hasNextPage mangas { id title thumbnailUrl } } }""",
+                   {"s": source_id, "p": page, "f": filter_changes(filters, row)})["fetchSourceManga"]
         for m in data["mangas"]:
             if m["id"] not in seen:
                 seen.add(m["id"])
@@ -210,8 +261,8 @@ def anilist_ids(titles):
             return out  # unresolved titles retry next pass
         for i, t in enumerate(batch):
             media = ((data.get(f"m{i}") or {}).get("media") or [None])[0]
-            names = {normalize(n) for n in [*(media or {}).get("title", {}).values(), *(media or {}).get("synonyms", [])] if n}
-            out[t] = media["id"] if media and normalize(t) in names else None
+            names = {title_key(n) for n in [*(media or {}).get("title", {}).values(), *(media or {}).get("synonyms", [])] if n}
+            out[t] = media["id"] if media and title_key(t) in names else None
         time.sleep(1)  # AniList allows ~90 requests/min
     return out
 
@@ -253,14 +304,32 @@ def save_jpeg(img, dest, quality):
 def build_feed():
     started = time.time()
     source_id = find_source()
+    curated_name = next(n["displayName"] for n in gql("{ sources { nodes { id displayName } } }")["sources"]["nodes"]
+                        if n["id"] == source_id)
     filters = source_filters(source_id)
+
+    # Every other installed source contributes its own Popular and Latest
+    # listings, merged into the curated categories instead of rows of its own
+    pool = {"POPULAR": [], "LATEST": []}
+    for src in other_sources(source_id):
+        for kind in pool:
+            if kind == "LATEST" and not src["supportsLatest"]:
+                continue
+            try:
+                pool[kind].append(fetch_listing(src, kind))
+            except Exception as e:
+                log(f"listing {src['displayName']} {kind} failed: {e}")
+    genres = genres_of(list({m["id"] for lists in pool.values() for lst in lists for m in lst}))
+
     rows_out = []
-    for row in ROWS + source_rows(other_sources(source_id)):
+    for row in ROWS:
         try:
-            mangas = fetch_row(source_id, filters, row)
+            curated = [{**m, "sourceName": curated_name} for m in fetch_row(source_id, filters, row)]
         except Exception as e:
             log(f"row {row['key']} failed: {e}")
             continue
+        extra = [[m for m in lst if wants(row, m, genres)] for lst in pool.get(row.get("merge"), [])]
+        mangas = merge_ranked([curated, *extra], HERO_ITEMS if row.get("subtitles") else ROW_LIMIT)
         items = []
         if row.get("subtitles"):
             candidates = mangas[:HERO_ITEMS]
@@ -279,7 +348,8 @@ def build_feed():
                 if image:
                     items.append({"id": str(m["id"]), "title": m["title"], "image": image})
         rows_out.append({"key": row["key"], "title": row["title"], "style": row["style"], "items": items})
-        log(f"row {row['key']}: {len(items)} items")
+        log(f"row {row['key']}: {len(items)} items "
+            f"({sum(1 for m in mangas if m['sourceName'] != curated_name)} from other sources)")
 
     feed = {"version": 1, "generatedAt": int(time.time()), "sourceId": str(source_id), "rows": rows_out}
     tmp = os.path.join(DATA_DIR, "feed.json.tmp")
@@ -287,7 +357,10 @@ def build_feed():
         json.dump(feed, f, ensure_ascii=False)
     os.replace(tmp, os.path.join(DATA_DIR, "feed.json"))
     log(f"feed built in {time.time() - started:.0f}s: {sum(len(r['items']) for r in rows_out)} items")
-    return rows_out
+    # Pool series not yet in a row still get pre-fetched, so their genres are
+    # known and they can land in genre rows on the next build
+    pool_row = {"key": "_pool", "items": [{"id": str(m["id"])} for lists in pool.values() for lst in lists for m in lst]}
+    return rows_out + [pool_row]
 
 
 def warm_series(rows):
@@ -320,6 +393,7 @@ def warm_series(rows):
         if n % 50 == 0:
             log(f"warming: {n}/{len(stale)} in {time.time() - started:.0f}s")
     log(f"warmed {warmed}/{len(stale)} series ({len(ordered) - len(stale)} already fresh) in {time.time() - started:.0f}s")
+    return warmed
 
 
 def dedupe_loop():
@@ -335,7 +409,9 @@ def dedupe_loop():
 def builder_loop():
     while True:
         try:
-            warm_series(build_feed())
+            if warm_series(build_feed()):
+                # Newly fetched series now have genres; rebuild so they show up in genre rows
+                build_feed()
         except Exception:
             log("build failed:\n" + traceback.format_exc())
         time.sleep(REFRESH_HOURS * 3600)
