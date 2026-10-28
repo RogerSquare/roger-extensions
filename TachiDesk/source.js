@@ -2932,7 +2932,17 @@ async function setSelectedSources(stateManager, selectedSources) {
 }
 exports.setSelectedSources = setSelectedSources;
 async function getSelectedSources(stateManager) {
-    return await stateManager.retrieve(exports.SELECTED_SOURCES_KEY) ?? exports.DEFAULT_SELECTED_SOURCES;
+    const stored = await stateManager.retrieve(exports.SELECTED_SOURCES_KEY);
+    if (stored && JSON.stringify(stored) !== JSON.stringify(exports.DEFAULT_SELECTED_SOURCES))
+        return stored;
+    // No choice made yet (or only the reset default): discover from every source in the selected languages
+    // instead of only the (usually empty) local source
+    const serverSources = await getServerSources(stateManager);
+    const selectedLanguages = await getSelectedLanguages(stateManager);
+    const discoverable = Object.values(serverSources)
+        .filter(source => source.id !== "0" && selectedLanguages.includes(source.lang))
+        .map(source => source.id);
+    return discoverable.length > 0 ? discoverable : exports.DEFAULT_SELECTED_SOURCES;
 }
 exports.getSelectedSources = getSelectedSources;
 function getSourcesIds(sources) {
@@ -3474,13 +3484,17 @@ exports.TachiDeskInfo = {
     description: 'Paperback extension which aims to bridge all of Tachidesks features and the Paperback App. (GraphQL)',
     icon: 'icon.png',
     name: 'Tachidesk',
-    version: '3.0.0',
+    version: '3.1.0',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: types_1.ContentRating.EVERYONE,
     sourceTags: [
         {
             text: "Self-hosted",
             type: types_1.BadgeColor.GREY
+        },
+        {
+            text: "roger-extensions",
+            type: types_1.BadgeColor.BLUE
         }
     ],
     intents: types_1.SourceIntents.MANGA_CHAPTERS | types_1.SourceIntents.SETTINGS_UI | types_1.SourceIntents.HOMEPAGE_SECTIONS | types_1.SourceIntents.MANGA_TRACKING
@@ -3563,8 +3577,11 @@ const GQL_FETCH_CHAPTER_PAGES = `
 const GQL_GET_RECENT_CHAPTERS = `
     query GetRecentChapters($offset: Int, $first: Int) {
         chapters(
-            condition: { isDownloaded: false }
-            orderBy: FETCHED_AT
+            # Library series only, newest release first. Fetch time also covers
+            # series merely browsed in Suwayomi, and isDownloaded: false hid
+            # everything once chapters were downloaded.
+            filter: { inLibrary: { equalTo: true } }
+            orderBy: UPLOAD_DATE
             orderByType: DESC
             offset: $offset
             first: $first
@@ -3607,6 +3624,7 @@ const GQL_GET_SOURCE_MANGAS = `
                 id
                 title
                 thumbnailUrl
+                inLibrary
             }
         }
     }
@@ -3907,6 +3925,9 @@ class TachiDesk {
                 }
             }
         }
+        // Discovery first (Popular, then Latest across sources), then the library rows
+        const sectionRank = { popular: 0, latest: 1, updated: 2, category: 3 };
+        sections.sort((a, b) => sectionRank[a.type] - sectionRank[b.type]);
         // Execute promises to fill section content
         for (const section of sections) {
             sectionCallback(section.section);
@@ -3917,7 +3938,8 @@ class TachiDesk {
                     if (section.type === "updated") {
                         const res = await (0, Common_1.graphqlRequest)(this.stateManager, this.requestManager, GQL_GET_RECENT_CHAPTERS, {
                             offset: 0,
-                            first: mangaPerRow
+                            // One series often has many chapters in a row; over-fetch so the row still fills after de-dup
+                            first: mangaPerRow * 20
                         });
                         mangas = res.data.chapters.nodes.map((node) => node.manga);
                     }
@@ -3933,11 +3955,14 @@ class TachiDesk {
                             type: section.type.toUpperCase(),
                             page: 1
                         });
-                        mangas = res.data.fetchSourceManga.mangas;
+                        // Discovery rows only surface series not already in the library
+                        mangas = res.data.fetchSourceManga.mangas.filter((manga) => !manga.inLibrary);
                     }
                     // De-dup (recent chapters can have duplicates)
                     const seen = new Set();
-                    for (const manga of mangas.slice(0, mangaPerRow)) {
+                    for (const manga of mangas) {
+                        if (tiles.length >= mangaPerRow)
+                            break;
                         const idStr = manga.id.toString();
                         if (seen.has(idStr))
                             continue;
@@ -3995,7 +4020,7 @@ class TachiDesk {
                     type: type.toUpperCase(),
                     page
                 });
-                mangas = res.data.fetchSourceManga.mangas;
+                mangas = res.data.fetchSourceManga.mangas.filter((manga) => !manga.inLibrary);
                 hasNextPage = res.data.fetchSourceManga.hasNextPage;
                 break;
             }

@@ -10,6 +10,37 @@
 <h1>tachidesk-paperback-ext</h1></div>
 <div class="tsd-panel tsd-typography"><!-- ## Warning: Project is not being maintained!
 **The original maintainer doesn't own the device to maintain this repo anymore thus this repo is archived, contact us on [Suwayomi discord](https://discord.gg/DDZdqZWaHA) if you want become a maintainer ^^** -->
+<h1 id="roger-extensions" class="tsd-anchor-link">roger-extensions<a href="#roger-extensions" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h1>
+<p>Personal Paperback <strong>0.8</strong> extension repository, forked from
+<a href="https://github.com/Suwayomi/tachidesk-paperback-ext">Suwayomi/tachidesk-paperback-ext</a>.
+The upstream README follows below.</p>
+<h2 id="add-it-to-paperback" class="tsd-anchor-link">Add it to Paperback<a href="#add-it-to-paperback" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<ol>
+<li>Paperback → <strong>Settings → External Sources → Edit → +</strong></li>
+<li>Base URL: <code>https://rogersquare.github.io/roger-extensions/</code></li>
+<li>Browse the repo and install <strong>Tachidesk</strong>.</li>
+<li>Open the source's settings and set the server URL (e.g. <code>http://10.0.0.145:4567</code>),
+then turn on authorization and enter the Suwayomi username and password.</li>
+</ol>
+<p>Don't add the upstream Suwayomi repo too: both publish the source id <code>TachiDesk</code>
+and would collide.</p>
+<h2 id="build-and-publish" class="tsd-anchor-link">Build and publish<a href="#build-and-publish" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<ul>
+<li>Every push to <code>master</code> runs <code>.github/workflows/main.yml</code>: <code>npm ci</code> →
+<code>npm run bundle</code> → deploys <code>bundles/</code> to the <code>gh-pages</code> branch, which GitHub
+Pages serves.</li>
+<li>Local build (Node 20): <code>npm ci &amp;&amp; npm run bundle</code>; <code>npm run serve</code> serves the
+bundle on the LAN so a phone can test it before pushing.</li>
+<li>Bump <code>version</code> in <code>src/TachiDesk/TachiDesk.ts</code> for Paperback to offer the update.</li>
+</ul>
+<h2 id="upstream-sync" class="tsd-anchor-link">Upstream sync<a href="#upstream-sync" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<pre><code class="bash"><span class="hl-0">git</span><span class="hl-1"> </span><span class="hl-2">fetch</span><span class="hl-1"> </span><span class="hl-2">upstream</span><br/><span class="hl-0">git</span><span class="hl-1"> </span><span class="hl-2">merge</span><span class="hl-1"> </span><span class="hl-2">upstream/master</span>
+</code><button type="button">Copy</button></pre>
+
+<h2 id="secrets" class="tsd-anchor-link">Secrets<a href="#secrets" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h2>
+<p><code>.gitignore</code> carries the standard secrets block and <code>.pre-commit-config.yaml</code>
+runs gitleaks; enable it once per clone with <code>pre-commit install</code>.</p>
+<hr>
 <h1 id="tachidesk-paperback-extension" class="tsd-anchor-link">Tachidesk Paperback Extension<a href="#tachidesk-paperback-extension" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="assets/icons.svg#icon-anchor"></use></svg></a></h1>
 <img src="https://user-images.githubusercontent.com/47613715/230618874-1d8bef58-382a-483e-9a4d-377714648965.png" alt="drawing" width="200"/>
 <p>This  <a href="https://paperback.moe/">Paperback</a> extension lets you use Tachiyomi extensions on iOS!
@@ -56,7 +87,12 @@
 <div class="tsd-theme-toggle"><label class="settings-label" for="tsd-theme">Theme</label><select id="tsd-theme"><option value="os">OS</option><option value="light">Light</option><option value="dark">Dark</option></select></div></div></details></div>
 <details open class="tsd-accordion tsd-page-navigation"><summary class="tsd-accordion-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="assets/icons.svg#icon-chevronDown"></use></svg>
 <h3>On This Page</h3></summary>
-<div class="tsd-accordion-details"><a href="#tachidesk-paperback-extension"><span>Tachidesk <wbr/>Paperback <wbr/>Extension</span></a>
+<div class="tsd-accordion-details"><a href="#roger-extensions"><span>roger-<wbr/>extensions</span></a>
+<ul>
+<li><a href="#add-it-to-paperback"><span>Add it to <wbr/>Paperback</span></a></li>
+<li><a href="#build-and-publish"><span>Build and publish</span></a></li>
+<li><a href="#upstream-sync"><span>Upstream sync</span></a></li>
+<li><a href="#secrets"><span>Secrets</span></a></li></ul><a href="#tachidesk-paperback-extension"><span>Tachidesk <wbr/>Paperback <wbr/>Extension</span></a>
 <ul>
 <li><a href="#notice"><span>Notice</span></a></li>
 <li><a href="#setup"><span>Setup</span></a></li>
