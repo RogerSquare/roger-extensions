@@ -3108,7 +3108,8 @@ const GENRES = [
     "Sports", "Historical"
 ];
 exports.DISCOVER_ROWS = [
-    { key: "hero", title: "Trending Now", style: "featured", sort: "Popularity", ongoingOnly: true },
+    // Same large portrait tiles as Most Popular; the user preferred them to banner art
+    { key: "hero", title: "Trending Now", style: "singleRowLarge", sort: "Popularity", ongoingOnly: true },
     { key: "new", title: "Newly Added", style: "singleRowNormal", sort: "Recently Added" },
     { key: "popular", title: "Most Popular", style: "singleRowLarge", sort: "Popularity" },
     { key: "anime", title: "Now an Anime", style: "singleRowNormal", sort: "Popularity", animeOnly: true },
@@ -3236,10 +3237,7 @@ async function getDiscoverRowMangas(stateManager, requestManager, sourceId, row)
     if (cached && Date.now() - cached.at < ROW_CACHE_TTL_MS)
         return cached.mangas;
     try {
-        let mangas = (await limited(() => fetchDiscoverRow(stateManager, requestManager, sourceId, row, 1))).mangas;
-        if (row.style === "featured") {
-            mangas = await withBannerArt(requestManager, mangas);
-        }
+        const mangas = (await limited(() => fetchDiscoverRow(stateManager, requestManager, sourceId, row, 1))).mangas;
         await stateManager.store(cacheKey, { at: Date.now(), mangas });
         return mangas;
     }
@@ -3251,45 +3249,6 @@ async function getDiscoverRowMangas(stateManager, requestManager, sourceId, row)
     }
 }
 exports.getDiscoverRowMangas = getDiscoverRowMangas;
-// ! Hero banner art
-// Weeb Central only has portrait covers; AniList has the wide banner art and
-// scores a Crunchyroll-style hero needs. Page() search returns an empty list on
-// a miss, where a bare Media() search fails the whole batch.
-const ANILIST_URL = "https://graphql.anilist.co";
-const HERO_SIZE = 10;
-async function withBannerArt(requestManager, mangas) {
-    const candidates = mangas.slice(0, HERO_SIZE * 2);
-    const aliases = candidates.map((manga, i) => `m${i}: Page(perPage: 1) { media(search: ${JSON.stringify(manga.title)}, type: MANGA, sort: SEARCH_MATCH) { bannerImage genres averageScore } }`);
-    let data = {};
-    try {
-        const response = await requestManager.schedule(App.createRequest({
-            url: ANILIST_URL,
-            method: "POST",
-            headers: { "Content-Type": "application/json", "Accept": "application/json" },
-            data: JSON.stringify({ query: `query { ${aliases.join(" ")} }` })
-        }), 1);
-        data = JSON.parse(response.data ?? "{}").data ?? {};
-    }
-    catch {
-        // AniList is decoration only; fall back to plain covers
-        return mangas;
-    }
-    const enriched = candidates.map((manga, i) => {
-        const media = data[`m${i}`]?.media?.[0];
-        if (!media)
-            return manga;
-        const score = media.averageScore ? `★ ${media.averageScore}%` : "";
-        return {
-            ...manga,
-            bannerUrl: media.bannerImage ?? undefined,
-            subtitle: [score, ...(media.genres ?? []).slice(0, 3)].filter(Boolean).join(" · ")
-        };
-    });
-    // Lead with series that have real banner art, like Crunchyroll's carousel
-    const withBanner = enriched.filter(manga => manga.bannerUrl);
-    const rest = enriched.filter(manga => !manga.bannerUrl);
-    return [...withBanner, ...rest].slice(0, HERO_SIZE);
-}
 // ! Precached feed
 // manga-feed (feed/ in this repo, runs on the NAS next to Suwayomi) rebuilds
 // every row every few hours with mirrored covers and rendered hero art. One
@@ -3343,7 +3302,7 @@ exports.fetchLibraryIds = fetchLibraryIds;
 function feedRowMangas(row, libraryIds) {
     return row.items
         .filter(item => !libraryIds.has(item.id))
-        .map(item => ({ id: item.id, title: item.title, bannerUrl: item.image, subtitle: item.subtitle }));
+        .map(item => ({ id: item.id, title: item.title, imageUrl: item.image, subtitle: item.subtitle }));
 }
 exports.feedRowMangas = feedRowMangas;
 // ! Recently read
@@ -3771,7 +3730,7 @@ exports.TachiDeskInfo = {
     description: 'Paperback extension which aims to bridge all of Tachidesks features and the Paperback App. (GraphQL)',
     icon: 'icon.png',
     name: 'Tachidesk',
-    version: '3.4.1',
+    version: '3.4.2',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: types_1.ContentRating.EVERYONE,
     sourceTags: [
@@ -3961,7 +3920,7 @@ class TachiDesk {
                 interceptRequest: async (request) => {
                     const authEnabled = await (0, Common_1.getAuthState)(this.stateManager);
                     const serverURL = await (0, Common_1.getServerURL)(this.stateManager);
-                    // Only our own server gets the Suwayomi credentials, never third parties (AniList)
+                    // Only our own server gets the Suwayomi credentials, never other hosts (e.g. the feed)
                     if (authEnabled && request.url.startsWith(serverURL)) {
                         request.headers = {
                             ...request.headers,
@@ -4344,8 +4303,8 @@ class TachiDesk {
                         tiles.push(App.createPartialSourceManga({
                             title: manga.title,
                             mangaId: idStr,
-                            // Hero rows carry AniList banner art and a score/genre subtitle
-                            image: manga.bannerUrl ?? (manga.thumbnailUrl ? serverURL + manga.thumbnailUrl.replace(/^\//, "") : ""),
+                            // Feed rows carry their own (mirrored) image URLs and optional subtitle
+                            image: manga.imageUrl ?? (manga.thumbnailUrl ? serverURL + manga.thumbnailUrl.replace(/^\//, "") : ""),
                             subtitle: manga.subtitle
                         }));
                     }
@@ -4435,7 +4394,7 @@ class TachiDesk {
                 title: manga.title,
                 mangaId: idStr,
                 // Feed rows carry their own (mirrored) image URLs
-                image: manga.bannerUrl ?? (manga.thumbnailUrl ? serverURL + manga.thumbnailUrl.replace(/^\//, "") : ""),
+                image: manga.imageUrl ?? (manga.thumbnailUrl ? serverURL + manga.thumbnailUrl.replace(/^\//, "") : ""),
                 subtitle: manga.subtitle
             }));
         }
