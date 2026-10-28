@@ -358,10 +358,15 @@ def build_feed():
         for kind in pool:
             if kind == "LATEST" and not src["supportsLatest"]:
                 continue
-            try:
-                pool[kind].append(fetch_listing(src, kind))
-            except Exception as e:
-                log(f"listing {src['displayName']} {kind} failed: {e}")
+            # Cloudflare-protected sources (via FlareSolverr) often time out on the first
+            # request while the challenge is solved, then work with the cached clearance
+            for attempt in (1, 2):
+                try:
+                    pool[kind].append(fetch_listing(src, kind))
+                    break
+                except Exception as e:
+                    if attempt == 2:
+                        log(f"listing {src['displayName']} {kind} failed: {str(e).splitlines()[0][:200]}")
     genres = genres_of(list({m["id"] for lists in pool.values() for lst in lists for m in lst}))
 
     rows_out = []
