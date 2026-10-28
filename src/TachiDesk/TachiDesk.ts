@@ -215,6 +215,7 @@ const GQL_GET_SOURCE_MANGAS = `
                 id
                 title
                 thumbnailUrl
+                inLibrary
             }
         }
     }
@@ -563,6 +564,10 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
             }
         }
 
+        // Discovery first (Popular, then Latest across sources), then the library rows
+        const sectionRank = { popular: 0, latest: 1, updated: 2, category: 3 }
+        sections.sort((a, b) => sectionRank[a.type] - sectionRank[b.type])
+
         // Execute promises to fill section content
         for (const section of sections) {
             sectionCallback(section.section)
@@ -590,7 +595,8 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
                             type: section.type.toUpperCase(),
                             page: 1
                         });
-                        mangas = res.data.fetchSourceManga.mangas;
+                        // Discovery rows only surface series not already in the library
+                        mangas = res.data.fetchSourceManga.mangas.filter((manga: any) => !manga.inLibrary);
                     }
 
                     // De-dup (recent chapters can have duplicates)
@@ -660,7 +666,7 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
                     type: type.toUpperCase(),
                     page
                 });
-                mangas = res.data.fetchSourceManga.mangas;
+                mangas = res.data.fetchSourceManga.mangas.filter((manga: any) => !manga.inLibrary);
                 hasNextPage = res.data.fetchSourceManga.hasNextPage;
                 break;
             }

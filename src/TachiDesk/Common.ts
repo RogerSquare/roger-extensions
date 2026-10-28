@@ -570,7 +570,18 @@ export async function setSelectedSources(stateManager: SourceStateManager, selec
 }
 
 export async function getSelectedSources(stateManager: SourceStateManager) {
-    return (await stateManager.retrieve(SELECTED_SOURCES_KEY) as string[] | undefined) ?? DEFAULT_SELECTED_SOURCES
+    const stored = await stateManager.retrieve(SELECTED_SOURCES_KEY) as string[] | undefined
+    if (stored && JSON.stringify(stored) !== JSON.stringify(DEFAULT_SELECTED_SOURCES)) return stored
+
+    // No choice made yet (or only the reset default): discover from every source in the selected languages
+    // instead of only the (usually empty) local source
+    const serverSources = await getServerSources(stateManager)
+    const selectedLanguages = await getSelectedLanguages(stateManager)
+    const discoverable = Object.values(serverSources)
+        .filter(source => source.id !== "0" && selectedLanguages.includes(source.lang))
+        .map(source => source.id)
+
+    return discoverable.length > 0 ? discoverable : DEFAULT_SELECTED_SOURCES
 }
 
 export function getSourcesIds(sources: Record<string, tachiSources>) {
