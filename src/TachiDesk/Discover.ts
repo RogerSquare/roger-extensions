@@ -25,6 +25,7 @@ export interface DiscoverRow {
     animeOnly?: boolean
     ongoingOnly?: boolean
     tag?: string
+    seriesTypes?: string[]
 }
 
 const GENRES = [
@@ -39,6 +40,9 @@ export const DISCOVER_ROWS: DiscoverRow[] = [
     { key: "new", title: "Newly Added", style: "singleRowNormal", sort: "Recently Added" },
     { key: "popular", title: "Most Popular", style: "singleRowLarge", sort: "Popularity" },
     { key: "anime", title: "Now an Anime", style: "singleRowNormal", sort: "Popularity", animeOnly: true },
+    // Webtoons: Korean manhwa and Chinese manhua (vertical-scroll, usually full color)
+    { key: "webtoonPopular", title: "Popular Webtoons", style: "singleRowNormal", sort: "Popularity", seriesTypes: ["Manhwa", "Manhua"] },
+    { key: "webtoonNew", title: "New Webtoons", style: "singleRowNormal", sort: "Recently Added", seriesTypes: ["Manhwa", "Manhua"] },
     ...GENRES.map((genre): DiscoverRow => ({
         key: "genre" + genre.replace(/[^A-Za-z]/g, ""),
         title: genre,
@@ -119,7 +123,8 @@ function buildFilterChanges(filters: SourceFilter[], row: DiscoverRow) {
         ...selectChange(filters, "Adult Content", "False"),
         ...(row.animeOnly ? selectChange(filters, "Anime Adaptation", "True") : []),
         ...(row.ongoingOnly ? groupChange(filters, "Series Status", "Ongoing", { checkBoxState: true }) : []),
-        ...(row.tag ? groupChange(filters, "Tags", row.tag, { triState: "INCLUDE" }) : [])
+        ...(row.tag ? groupChange(filters, "Tags", row.tag, { triState: "INCLUDE" }) : []),
+        ...(row.seriesTypes ?? []).flatMap(kind => groupChange(filters, "Series Type", kind, { checkBoxState: true }))
     ]
 }
 
