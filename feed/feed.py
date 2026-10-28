@@ -30,6 +30,7 @@ TMDB_TOKEN = os.environ.get("TMDB_TOKEN", "").strip()
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
 PORT = int(os.environ.get("PORT", "4580"))
 REFRESH_HOURS = float(os.environ.get("REFRESH_HOURS", "6"))
+WARM_MAX_AGE_HOURS = float(os.environ.get("WARM_MAX_AGE_HOURS", "20"))
 SOURCE_NAME = os.environ.get("DISCOVER_SOURCE", "Weeb Central")
 USER_AGENT = "manga-feed/1.0 (+https://github.com/RogerSquare/roger-extensions)"
 
@@ -323,12 +324,39 @@ def build_feed():
         json.dump(feed, f, ensure_ascii=False)
     os.replace(tmp, os.path.join(DATA_DIR, "feed.json"))
     log(f"feed built in {time.time() - started:.0f}s: {sum(len(r['items']) for r in rows_out)} items")
+    return rows_out
+
+
+def warm_series(rows):
+    """Have Suwayomi fetch details + chapter lists for every feed series ahead of time.
+
+    Browse results are stubs (no description, no chapters), so opening one on the
+    phone waited on two live scrapes queued behind the downloader. Hero and top
+    rows go first; series refreshed within WARM_MAX_AGE_HOURS are skipped.
+    """
+    ordered = list(dict.fromkeys(int(item["id"]) for row in rows for item in row["items"]))
+    fetched = {}
+    for i in range(0, len(ordered), 200):
+        nodes = gql("query($ids: [Int!]) { mangas(filter: { id: { in: $ids } }) { nodes { id lastFetchedAt } } }",
+                    {"ids": ordered[i:i + 200]})["mangas"]["nodes"]
+        fetched.update({n["id"]: int(n["lastFetchedAt"] or 0) for n in nodes})
+    cutoff = time.time() - WARM_MAX_AGE_HOURS * 3600
+    stale = [mid for mid in ordered if fetched.get(mid, 0) < cutoff]
+    started, warmed = time.time(), 0
+    for mid in stale:
+        try:
+            gql("mutation($id: Int!) { fetchManga(input: { id: $id }) { manga { id } } }", {"id": mid})
+            gql("mutation($id: Int!) { fetchChapters(input: { mangaId: $id }) { chapters { id } } }", {"id": mid})
+            warmed += 1
+        except Exception as e:
+            log(f"warm {mid} failed: {e}")
+    log(f"warmed {warmed}/{len(stale)} series ({len(ordered) - len(stale)} already fresh) in {time.time() - started:.0f}s")
 
 
 def builder_loop():
     while True:
         try:
-            build_feed()
+            warm_series(build_feed())
         except Exception:
             log("build failed:\n" + traceback.format_exc())
         time.sleep(REFRESH_HOURS * 3600)
