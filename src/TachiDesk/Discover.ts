@@ -164,7 +164,7 @@ export async function fetchDiscoverRow(
 const GQL_RECENTLY_READ = `
     query RecentlyRead($offset: Int, $first: Int) {
         chapters(
-            filter: { lastReadAt: { greaterThan: "0" } }
+            filter: { lastReadAt: { greaterThan: "0" }, inLibrary: { equalTo: true } }
             orderBy: LAST_READ_AT
             orderByType: DESC
             offset: $offset
