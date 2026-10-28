@@ -2,13 +2,10 @@
 
 Every REFRESH_HOURS this rebuilds feed.json from Suwayomi: the same
 Crunchyroll-style rows the extension used to fetch live (Weeb Central
-filters, adult content off), with covers mirrored to disk and hero images
-rendered to Paperback's featured-card shape. A small HTTP server serves
-feed.json and img/ so the phone makes one fast LAN request instead of ~20
-live scrapes queued behind the downloader.
-
-Hero art: a TMDB backdrop when the series has an anime adaptation (needs
-TMDB_TOKEN), otherwise the manga cover over a blurred copy of itself.
+filters, adult content off), with covers mirrored to disk. A small HTTP
+server serves feed.json and img/ so the phone makes one fast LAN request
+instead of ~20 live scrapes queued behind the downloader. Trending Now items
+also carry an AniList score/genre subtitle.
 """
 import base64
 import io
@@ -17,16 +14,14 @@ import os
 import threading
 import time
 import traceback
-import urllib.parse
 import urllib.request
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
+from PIL import Image
 
 SUWAYOMI_URL = os.environ.get("SUWAYOMI_URL", "http://10.0.0.145:4567").rstrip("/")
 AUTH = base64.b64encode(f"{os.environ['AUTH_USERNAME']}:{os.environ['AUTH_PASSWORD']}".encode()).decode()
-TMDB_TOKEN = os.environ.get("TMDB_TOKEN", "").strip()
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
 PORT = int(os.environ.get("PORT", "4580"))
 REFRESH_HOURS = float(os.environ.get("REFRESH_HOURS", "6"))
@@ -34,9 +29,6 @@ WARM_MAX_AGE_HOURS = float(os.environ.get("WARM_MAX_AGE_HOURS", "20"))
 SOURCE_NAME = os.environ.get("DISCOVER_SOURCE", "Weeb Central")
 USER_AGENT = "manga-feed/1.0 (+https://github.com/RogerSquare/roger-extensions)"
 
-# Featured card measured on the phone: 858x589 pt, title/subtitle/buttons
-# drawn over the bottom ~42%. Keep the subject in the top part.
-HERO_W, HERO_H = 1200, 824
 HERO_ITEMS = 20
 ROW_PAGES = 2  # ~64 items, so rows stay full after the extension hides library series
 COVER_MAX_H = 900
@@ -46,7 +38,9 @@ GENRES = ["Action", "Adventure", "Comedy", "Drama", "Fantasy", "Mystery", "Roman
           "Sports", "Historical"]
 
 ROWS = [
-    {"key": "hero", "title": "Trending Now", "style": "featured", "sort": "Popularity", "ongoing": True},
+    # Same large portrait tiles as Most Popular; the user preferred them to banner art
+    {"key": "hero", "title": "Trending Now", "style": "singleRowLarge", "sort": "Popularity", "ongoing": True,
+     "subtitles": True},
     {"key": "new", "title": "Newly Added", "style": "singleRowNormal", "sort": "Recently Added"},
     {"key": "popular", "title": "Most Popular", "style": "singleRowLarge", "sort": "Popularity"},
     {"key": "anime", "title": "Now an Anime", "style": "singleRowNormal", "sort": "Popularity", "anime": True},
@@ -141,7 +135,7 @@ def anilist_lookup(titles):
         return {}
     aliases = " ".join(
         f"m{i}: Page(perPage: 1) {{ media(search: {json.dumps(t)}, type: MANGA, sort: SEARCH_MATCH) "
-        f"{{ title {{ romaji english }} coverImage {{ extraLarge }} averageScore genres }} }}"
+        f"{{ averageScore genres }} }}"
         for i, t in enumerate(titles))
     try:
         data = http_json("https://graphql.anilist.co", {"query": f"query {{ {aliases} }}"}).get("data") or {}
@@ -154,29 +148,6 @@ def anilist_lookup(titles):
         if media:
             out[t] = media
     return out
-
-
-def tmdb_backdrop(names):
-    """Textless backdrop of the anime adaptation, if TMDB knows one."""
-    if not TMDB_TOKEN:
-        return None
-    headers = {"Authorization": "Bearer " + TMDB_TOKEN}
-    for name in [n for n in names if n]:
-        try:
-            results = http_json("https://api.themoviedb.org/3/search/tv?include_adult=false&query="
-                                + urllib.parse.quote(name), headers=headers, timeout=20).get("results") or []
-            anime = [r for r in results if 16 in (r.get("genre_ids") or [])]
-            if not anime:
-                continue
-            images = http_json(f"https://api.themoviedb.org/3/tv/{anime[0]['id']}/images"
-                               "?include_image_language=null,en", headers=headers, timeout=20)
-            backdrops = sorted(images.get("backdrops") or [],
-                               key=lambda b: (b.get("iso_639_1") is not None, -(b.get("vote_average") or 0)))
-            if backdrops:
-                return "https://image.tmdb.org/t/p/w1280" + backdrops[0]["file_path"]
-        except Exception as e:
-            log(f"tmdb {name!r} failed: {e}")
-    return None
 
 
 # ---------------------------------------------------------------- images
@@ -211,80 +182,6 @@ def save_jpeg(img, dest, quality):
     os.replace(tmp, dest)
 
 
-def fill(img, w, h, bias=0.5):
-    """Scale to cover w x h and crop; bias < 0.5 keeps more of the top (faces, titles)."""
-    scale = max(w / img.width, h / img.height)
-    img = img.resize((round(img.width * scale), round(img.height * scale)), Image.LANCZOS)
-    left, top = (img.width - w) // 2, int((img.height - h) * bias)
-    return img.crop((left, top, left + w, top + h))
-
-
-def vignette(canvas, strength=200):
-    # Darker edges pull the eye to the centered cover
-    small = Image.new("L", (HERO_W // 8, HERO_H // 8), 0)
-    w, h = small.size
-    ImageDraw.Draw(small).ellipse((-w * 0.15, -h * 0.35, w * 1.15, h * 1.05), fill=255)
-    mask = small.filter(ImageFilter.GaussianBlur(w // 6)).resize(canvas.size)
-    return Image.composite(canvas, Image.blend(canvas, Image.new("RGB", canvas.size, (0, 0, 0)), strength / 255), mask)
-
-
-def rounded_mask(img, radius):
-    mask = Image.new("L", img.size, 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, img.width - 1, img.height - 1), radius, fill=255)
-    return mask
-
-
-def bottom_fade(canvas, start=0.42, strength=250):
-    # Paperback draws title, subtitle and buttons over the lower part of the card
-    fade = Image.new("L", (1, HERO_H), 0)
-    begin = int(HERO_H * start)
-    for y in range(begin, HERO_H):
-        fade.putpixel((0, y), int(strength * ((y - begin) / (HERO_H - begin)) ** 1.3))
-    black = Image.new("RGB", canvas.size, (0, 0, 0))
-    return Image.composite(black, canvas, fade.resize(canvas.size))
-
-
-def render_backdrop_hero(backdrop):
-    # Whole 16:9 backdrop across the top, extended downward by a blurred copy
-    canvas = ImageEnhance.Brightness(fill(backdrop, HERO_W, HERO_H).filter(ImageFilter.GaussianBlur(30))).enhance(0.5)
-    sharp = backdrop.resize((HERO_W, round(backdrop.height * HERO_W / backdrop.width)), Image.LANCZOS)
-    canvas.paste(sharp, (0, 0))
-    return bottom_fade(canvas, start=0.40)
-
-
-def render_cover_hero(cover):
-    # Crunchyroll-style: the sharp cover over its own upper art, blurred and
-    # saturated (a heavy blur turns into a grey smear), with a vignette
-    bg = fill(cover, HERO_W, HERO_H, bias=0.2).filter(ImageFilter.GaussianBlur(18))
-    canvas = vignette(ImageEnhance.Brightness(ImageEnhance.Color(bg).enhance(1.35)).enhance(0.62))
-    cover_h = int(HERO_H * 0.60)
-    sharp = cover.resize((round(cover.width * cover_h / cover.height), cover_h), Image.LANCZOS)
-    x, y = (HERO_W - sharp.width) // 2, 26
-    shadow = Image.new("L", canvas.size, 0)
-    ImageDraw.Draw(shadow).rounded_rectangle((x + 4, y + 14, x + sharp.width + 4, y + sharp.height + 14), 16, fill=200)
-    canvas = Image.composite(Image.new("RGB", canvas.size, (0, 0, 0)), canvas, shadow.filter(ImageFilter.GaussianBlur(22)))
-    canvas.paste(sharp, (x, y), rounded_mask(sharp, 14))
-    return bottom_fade(canvas, start=0.55)
-
-
-def build_hero(manga, meta):
-    rel = f"img/h/{manga['id']}.jpg"
-    names = [(meta.get("title") or {}).get("english"), (meta.get("title") or {}).get("romaji"), manga["title"]]
-    backdrop_url = tmdb_backdrop(list(dict.fromkeys(names)))
-    try:
-        if backdrop_url:
-            img = render_backdrop_hero(Image.open(io.BytesIO(http_bytes(backdrop_url))).convert("RGB"))
-        else:
-            cover_url = (meta.get("coverImage") or {}).get("extraLarge")
-            raw = http_bytes(cover_url) if cover_url else suwayomi_image(manga["thumbnailUrl"])
-            img = render_cover_hero(Image.open(io.BytesIO(raw)).convert("RGB"))
-        save_jpeg(img, os.path.join(DATA_DIR, rel), 86)
-        return rel, "tmdb" if backdrop_url else "cover"
-    except Exception as e:
-        log(f"hero {manga['id']} failed: {e}")
-        return None, None
-
-
 # ---------------------------------------------------------------- build
 
 def build_feed():
@@ -299,16 +196,16 @@ def build_feed():
             log(f"row {row['key']} failed: {e}")
             continue
         items = []
-        if row["style"] == "featured":
+        if row.get("subtitles"):
             candidates = mangas[:HERO_ITEMS]
             meta = anilist_lookup([m["title"] for m in candidates])
             for m in candidates:
-                info = meta.get(m["title"], {})
-                image, kind = build_hero(m, info)
+                image = mirror_cover(m)
                 if not image:
                     continue
+                info = meta.get(m["title"], {})
                 score = f"★ {info['averageScore']}%" if info.get("averageScore") else ""
-                items.append({"id": str(m["id"]), "title": m["title"], "image": image, "art": kind,
+                items.append({"id": str(m["id"]), "title": m["title"], "image": image,
                               "subtitle": " · ".join([s for s in [score, *(info.get("genres") or [])[:3]] if s])})
         else:
             for m in mangas:
@@ -375,5 +272,5 @@ class FeedHandler(SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     os.makedirs(DATA_DIR, exist_ok=True)
     threading.Thread(target=builder_loop, daemon=True).start()
-    log(f"serving {DATA_DIR} on :{PORT}; refresh every {REFRESH_HOURS}h; tmdb {'on' if TMDB_TOKEN else 'off'}")
+    log(f"serving {DATA_DIR} on :{PORT}; refresh every {REFRESH_HOURS}h")
     ThreadingHTTPServer(("0.0.0.0", PORT), partial(FeedHandler, directory=DATA_DIR)).serve_forever()
