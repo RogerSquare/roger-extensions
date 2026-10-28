@@ -1,0 +1,35 @@
+name: Build Check
+
+# Bundles every pull request without publishing, so a broken build shows up
+# before merge instead of after main.yml deploys to gh-pages.
+on:
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    name: Bundle sources
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Branch
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Bundle sources
+        run: npx paperback bundle
+
+      - name: Show published versions
+        run: cat bundles/versioning.json
