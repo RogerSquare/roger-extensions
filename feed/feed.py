@@ -44,6 +44,11 @@ ROWS = [
     {"key": "new", "title": "Newly Added", "style": "singleRowNormal", "sort": "Recently Added"},
     {"key": "popular", "title": "Most Popular", "style": "singleRowLarge", "sort": "Popularity"},
     {"key": "anime", "title": "Now an Anime", "style": "singleRowNormal", "sort": "Popularity", "anime": True},
+    # Webtoons: Korean manhwa and Chinese manhua (vertical-scroll, usually full color)
+    {"key": "webtoonPopular", "title": "Popular Webtoons", "style": "singleRowNormal", "sort": "Popularity",
+     "types": ["Manhwa", "Manhua"]},
+    {"key": "webtoonNew", "title": "New Webtoons", "style": "singleRowNormal", "sort": "Recently Added",
+     "types": ["Manhwa", "Manhua"]},
 ] + [{"key": "genre" + "".join(c for c in g if c.isalpha()), "title": g, "style": "singleRowNormal",
       "sort": "Popularity", "tag": g} for g in GENRES]
 
@@ -108,7 +113,8 @@ def filter_changes(filters, row):
     return (select("Sort", row["sort"]) + select("Adult Content", "False")
             + (select("Anime Adaptation", "True") if row.get("anime") else [])
             + (group("Series Status", "Ongoing", {"checkBoxState": True}) if row.get("ongoing") else [])
-            + (group("Tags", row["tag"], {"triState": "INCLUDE"}) if row.get("tag") else []))
+            + (group("Tags", row["tag"], {"triState": "INCLUDE"}) if row.get("tag") else [])
+            + [change for kind in row.get("types", []) for change in group("Series Type", kind, {"checkBoxState": True})])
 
 
 def fetch_row(source_id, filters, row):
