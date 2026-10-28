@@ -77,7 +77,7 @@ export const TachiDeskInfo: SourceInfo = {
     description: "Panelhouse: Roger's self-hosted manga and webtoon library, served by Suwayomi (GraphQL). Based on the Tachidesk extension.",
     icon: 'icon.png',
     name: 'Panelhouse',
-    version: '3.5.1',
+    version: '3.5.2',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: ContentRating.EVERYONE,
     sourceTags: [
@@ -273,6 +273,10 @@ const GQL_UPDATE_CHAPTER_READ = `
 
 export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding {
     stateManager = App.createSourceStateManager();
+    // Back Room (src/BackRoom, the 18+ sibling source) overrides these two
+    feedPort = 4580
+    adultContent = "False"
+
     requestManager = App.createRequestManager({
         requestsPerSecond: 4,
         // Discovery rows wait on Suwayomi's per-source queue, which the downloader also uses
@@ -536,7 +540,7 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
 
         // The NAS feed has every discovery row precached; live rows are the fallback
         const [feedRows, library] = await Promise.all([
-            fetchFeedRows(this.requestManager, serverURL),
+            fetchFeedRows(this.requestManager, serverURL, this.feedPort),
             fetchLibraryIds(this.stateManager, this.requestManager)
         ])
 
@@ -673,7 +677,7 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
                     } else if (section.type === "discover") {
                         const row = getDiscoverRow(String(section.id))
                         if (row && discoverSource) {
-                            mangas = await getDiscoverRowMangas(this.stateManager, this.requestManager, discoverSource.id, row);
+                            mangas = await getDiscoverRowMangas(this.stateManager, this.requestManager, discoverSource.id, row, this.adultContent);
                         }
                     } else if (section.type === "recentread") {
                         // Many chapters per series in a reading session; over-fetch so the row fills after de-dup
@@ -745,7 +749,7 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
             case "feed": {
                 // The feed already holds a full row (two source pages); no further paging
                 const [feedRows, library] = await Promise.all([
-                    fetchFeedRows(this.requestManager, serverURL),
+                    fetchFeedRows(this.requestManager, serverURL, this.feedPort),
                     fetchLibraryIds(this.stateManager, this.requestManager)
                 ]);
                 const row = feedRows?.find(feedRow => feedRow.key === sourceId);
@@ -756,7 +760,7 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
                 const row = getDiscoverRow(sourceId);
                 const discoverSource = findDiscoverSource(await getServerSources(this.stateManager));
                 if (row && discoverSource) {
-                    ({ mangas, hasNextPage } = await fetchDiscoverRow(this.stateManager, this.requestManager, discoverSource.id, row, page));
+                    ({ mangas, hasNextPage } = await fetchDiscoverRow(this.stateManager, this.requestManager, discoverSource.id, row, page, this.adultContent));
                 }
                 break;
             }

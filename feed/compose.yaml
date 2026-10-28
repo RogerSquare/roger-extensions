@@ -15,3 +15,21 @@ services:
     volumes:
       - /volume1/docker/manga-feed/data:/data
     restart: unless-stopped
+
+  # Back Room: the 18+ sibling, same code against the second Suwayomi (:4568)
+  manga-feed-backroom:
+    image: manga-feed:local
+    container_name: manga-feed-backroom
+    depends_on: [manga-feed] # built by the service above
+    ports:
+      - 4581:4580
+    env_file:
+      - /volume1/docker/suwayomi-backroom/.env
+    environment:
+      SUWAYOMI_URL: http://10.0.0.145:4568
+      REFRESH_HOURS: "6"
+      DEDUPE_DRY_RUN: "false"
+      ADULT_CONTENT: "True"
+    volumes:
+      - /volume1/docker/manga-feed-backroom/data:/data
+    restart: unless-stopped

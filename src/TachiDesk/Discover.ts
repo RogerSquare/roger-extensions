@@ -117,10 +117,10 @@ function groupChange(filters: SourceFilter[], name: string, child: string, chang
     return childIndex === -1 ? [] : [{ position, groupChange: { position: childIndex, ...change } }]
 }
 
-function buildFilterChanges(filters: SourceFilter[], row: DiscoverRow) {
+function buildFilterChanges(filters: SourceFilter[], row: DiscoverRow, adultContent: string) {
     return [
         ...selectChange(filters, "Sort", row.sort),
-        ...selectChange(filters, "Adult Content", "False"),
+        ...selectChange(filters, "Adult Content", adultContent),
         ...(row.animeOnly ? selectChange(filters, "Anime Adaptation", "True") : []),
         ...(row.ongoingOnly ? groupChange(filters, "Series Status", "Ongoing", { checkBoxState: true }) : []),
         ...(row.tag ? groupChange(filters, "Tags", row.tag, { triState: "INCLUDE" }) : []),
@@ -149,13 +149,14 @@ export async function fetchDiscoverRow(
     requestManager: RequestManager,
     sourceId: string,
     row: DiscoverRow,
-    page: number
+    page: number,
+    adultContent: string
 ): Promise<{ mangas: any[], hasNextPage: boolean }> {
     const filters = await getSourceFilters(stateManager, requestManager, sourceId)
     const res = await graphqlRequest(stateManager, requestManager, GQL_DISCOVER, {
         sourceId,
         page,
-        filters: buildFilterChanges(filters, row)
+        filters: buildFilterChanges(filters, row, adultContent)
     })
 
     return {
@@ -193,14 +194,15 @@ export async function getDiscoverRowMangas(
     stateManager: SourceStateManager,
     requestManager: RequestManager,
     sourceId: string,
-    row: DiscoverRow
+    row: DiscoverRow,
+    adultContent: string
 ): Promise<any[]> {
     const cacheKey = "discover_cache_" + row.key
     const cached = await stateManager.retrieve(cacheKey) as { at: number, mangas: any[] } | undefined
     if (cached && Date.now() - cached.at < ROW_CACHE_TTL_MS) return cached.mangas
 
     try {
-        const mangas = (await limited(() => fetchDiscoverRow(stateManager, requestManager, sourceId, row, 1))).mangas
+        const mangas = (await limited(() => fetchDiscoverRow(stateManager, requestManager, sourceId, row, 1, adultContent))).mangas
         await stateManager.store(cacheKey, { at: Date.now(), mangas })
         return mangas
     } catch (error) {
@@ -215,7 +217,7 @@ export async function getDiscoverRowMangas(
 // manga-feed (feed/ in this repo, runs on the NAS next to Suwayomi) rebuilds
 // every row every few hours with mirrored covers and rendered hero art. One
 // LAN request replaces ~20 live scrapes; the live rows above are the fallback.
-const FEED_PORT = 4580
+// Each source passes its own feed port (Panelhouse 4580, Back Room 4581).
 
 export interface FeedRow {
     key: string
@@ -224,13 +226,13 @@ export interface FeedRow {
     items: { id: string, title: string, image: string, subtitle?: string }[]
 }
 
-export function feedBaseURL(serverURL: string): string {
+export function feedBaseURL(serverURL: string, feedPort: number): string {
     const match = serverURL.match(/^(https?:\/\/[^\/:]+)/)
-    return match ? `${match[1]}:${FEED_PORT}/` : ""
+    return match ? `${match[1]}:${feedPort}/` : ""
 }
 
-export async function fetchFeedRows(requestManager: RequestManager, serverURL: string): Promise<FeedRow[] | undefined> {
-    const base = feedBaseURL(serverURL)
+export async function fetchFeedRows(requestManager: RequestManager, serverURL: string, feedPort: number): Promise<FeedRow[] | undefined> {
+    const base = feedBaseURL(serverURL, feedPort)
     if (!base) return undefined
     try {
         const response = await requestManager.schedule(App.createRequest({ url: base + "feed.json", method: "GET" }), 0)

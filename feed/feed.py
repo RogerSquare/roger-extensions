@@ -35,6 +35,8 @@ SOURCE_LANG = os.environ.get("SOURCE_LANG", "en")
 # Copycat sites, the empty local source, and sources the user rejected (Mangago) never feed rows
 SKIP_SOURCES = [s.strip() for s in os.environ.get("SKIP_SOURCES", "Local source,Bbato,Mangago").split(",") if s.strip()]
 SOURCE_NAME = os.environ.get("DISCOVER_SOURCE", "Weeb Central")
+# Curated rows' "Adult Content" filter: "False" for Panelhouse, "True" (adult only) for Back Room
+ADULT_CONTENT = os.environ.get("ADULT_CONTENT", "False")
 USER_AGENT = "manga-feed/1.0 (+https://github.com/RogerSquare/roger-extensions)"
 
 HERO_ITEMS = 20
@@ -126,7 +128,7 @@ def filter_changes(filters, row):
                 return [{"position": i, "groupChange": {"position": f["children"].index(child), **change}}]
         return []
 
-    return (select("Sort", row["sort"]) + select("Adult Content", "False")
+    return (select("Sort", row["sort"]) + select("Adult Content", ADULT_CONTENT)
             + (select("Anime Adaptation", "True") if row.get("anime") else [])
             + (group("Series Status", "Ongoing", {"checkBoxState": True}) if row.get("ongoing") else [])
             + (group("Tags", row["tag"], {"triState": "INCLUDE"}) if row.get("tag") else [])
