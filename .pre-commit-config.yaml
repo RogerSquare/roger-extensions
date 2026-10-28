@@ -1,0 +1,12 @@
+# Canonical pre-commit hook config — copy to each repo as .pre-commit-config.yaml.
+# Source of truth: atrium/docs/standards/pre-commit-config.yaml
+# Drives: feat-secrets-audit-001 (Atrium task)
+#
+# Bump `rev` intentionally (not on every commit). Check latest at:
+# https://github.com/gitleaks/gitleaks/releases
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        name: gitleaks (block secrets on commit)
