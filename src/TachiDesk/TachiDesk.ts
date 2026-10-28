@@ -77,7 +77,7 @@ export const TachiDeskInfo: SourceInfo = {
     description: 'Paperback extension which aims to bridge all of Tachidesks features and the Paperback App. (GraphQL)',
     icon: 'icon.png',
     name: 'Tachidesk',
-    version: '3.4.4',
+    version: '3.5.0',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: ContentRating.EVERYONE,
     sourceTags: [
@@ -535,7 +535,7 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
         const discoverSource = findDiscoverSource(knownSources)
 
         // The NAS feed has every discovery row precached; live rows are the fallback
-        const [feedRows, libraryIds] = await Promise.all([
+        const [feedRows, library] = await Promise.all([
             fetchFeedRows(this.requestManager, serverURL),
             fetchLibraryIds(this.stateManager, this.requestManager)
         ])
@@ -669,7 +669,7 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
 
                     if (section.type === "feed") {
                         const row = feedRows?.find(feedRow => feedRow.key === section.id)
-                        if (row) mangas = feedRowMangas(row, libraryIds);
+                        if (row) mangas = feedRowMangas(row, library);
                     } else if (section.type === "discover") {
                         const row = getDiscoverRow(String(section.id))
                         if (row && discoverSource) {
@@ -744,12 +744,12 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
         switch (type) {
             case "feed": {
                 // The feed already holds a full row (two source pages); no further paging
-                const [feedRows, libraryIds] = await Promise.all([
+                const [feedRows, library] = await Promise.all([
                     fetchFeedRows(this.requestManager, serverURL),
                     fetchLibraryIds(this.stateManager, this.requestManager)
                 ]);
                 const row = feedRows?.find(feedRow => feedRow.key === sourceId);
-                if (row) mangas = feedRowMangas(row, libraryIds);
+                if (row) mangas = feedRowMangas(row, library);
                 break;
             }
             case "discover": {

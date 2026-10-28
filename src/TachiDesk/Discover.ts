@@ -250,25 +250,42 @@ export async function fetchFeedRows(requestManager: RequestManager, serverURL: s
 const GQL_LIBRARY_IDS = `
     query LibraryIds {
         mangas(condition: { inLibrary: true }) {
-            nodes { id }
+            nodes { id title }
         }
     }
 `
 
-// The feed is library-agnostic; hide library series on the phone instead
-export async function fetchLibraryIds(stateManager: SourceStateManager, requestManager: RequestManager): Promise<Set<string>> {
+export interface LibraryIndex {
+    ids: Set<string>
+    titles: Set<string>
+}
+
+// Same rules as feed/dedupe.py normalize(), so "Spy × Family" from one source
+// matches "Spy x Family" from another
+export function normalizeTitle(title: string): string {
+    return title.replace(/×/g, "x").normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase()
+        .replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim().replace(/^the /, "")
+}
+
+// The feed is library-agnostic; hide library series on the phone instead,
+// by id and by title so a copy on another source is hidden too
+export async function fetchLibraryIds(stateManager: SourceStateManager, requestManager: RequestManager): Promise<LibraryIndex> {
     try {
         const res = await graphqlRequest(stateManager, requestManager, GQL_LIBRARY_IDS)
-        return new Set(res.data.mangas.nodes.map((node: any) => String(node.id)))
+        const nodes = res.data.mangas.nodes
+        return {
+            ids: new Set(nodes.map((node: any) => String(node.id))),
+            titles: new Set(nodes.map((node: any) => normalizeTitle(node.title)))
+        }
     } catch {
-        return new Set()
+        return { ids: new Set(), titles: new Set() }
     }
 }
 
 // Shape feed items like the GraphQL mangas the tile builder already handles
-export function feedRowMangas(row: FeedRow, libraryIds: Set<string>): any[] {
+export function feedRowMangas(row: FeedRow, library: LibraryIndex): any[] {
     return row.items
-        .filter(item => !libraryIds.has(item.id))
+        .filter(item => !library.ids.has(item.id) && !library.titles.has(normalizeTitle(item.title)))
         .map(item => ({ id: item.id, title: item.title, imageUrl: item.image, subtitle: item.subtitle }))
 }
 
