@@ -30,6 +30,11 @@ services:
       REFRESH_HOURS: "6"
       DEDUPE_DRY_RUN: "false"
       ADULT_CONTENT: "True"
+      # Weeb Central's adult flag includes mature-but-not-explicit series (Berserk); require an explicit tag too
+      EXPLICIT_TAGS: "Smut,Hentai,Adult,Ecchi"
+      # Never show anything already in Panelhouse's library
+      EXCLUDE_TITLES_URL: http://10.0.0.145:4580/library-titles.json
+      SOURCE_LANG: "en,all" # HentaiFox (ALL), FoamGirl (ALL) are multi-language sources
     volumes:
       - /volume1/docker/manga-feed-backroom/data:/data
     restart: unless-stopped
