@@ -3095,7 +3095,7 @@ exports.v1Migration = v1Migration;
 },{"buffer":63}],66:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.fetchRecentlyRead = exports.fetchDiscoverRow = exports.findDiscoverSource = exports.getDiscoverRow = exports.DISCOVER_ROWS = exports.DISCOVER_SOURCE_NAME = void 0;
+exports.fetchRecentlyRead = exports.getDiscoverRowMangas = exports.fetchDiscoverRow = exports.findDiscoverSource = exports.getDiscoverRow = exports.DISCOVER_ROWS = exports.DISCOVER_SOURCE_NAME = void 0;
 const Common_1 = require("./Common");
 // Crunchyroll-style discovery rows, built from one Suwayomi source's own
 // filters (sort, genre tags, anime adaptation, adult content). Filters are
@@ -3209,6 +3209,87 @@ async function fetchDiscoverRow(stateManager, requestManager, sourceId, row, pag
     };
 }
 exports.fetchDiscoverRow = fetchDiscoverRow;
+// ! Row cache + concurrency
+// Every row waits in Suwayomi's per-source queue (shared with the downloader),
+// so firing all rows at once pushed the slowest past the request timeout and
+// they rendered empty. Cap parallel fetches and serve rows from a cache.
+const MAX_PARALLEL_FETCHES = 3;
+const ROW_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+let activeFetches = 0;
+const waitingFetches = [];
+async function limited(task) {
+    if (activeFetches >= MAX_PARALLEL_FETCHES) {
+        await new Promise(resolve => waitingFetches.push(resolve));
+    }
+    activeFetches++;
+    try {
+        return await task();
+    }
+    finally {
+        activeFetches--;
+        waitingFetches.shift()?.();
+    }
+}
+async function getDiscoverRowMangas(stateManager, requestManager, sourceId, row) {
+    const cacheKey = "discover_cache_" + row.key;
+    const cached = await stateManager.retrieve(cacheKey);
+    if (cached && Date.now() - cached.at < ROW_CACHE_TTL_MS)
+        return cached.mangas;
+    try {
+        let mangas = (await limited(() => fetchDiscoverRow(stateManager, requestManager, sourceId, row, 1))).mangas;
+        if (row.style === "featured") {
+            mangas = await withBannerArt(requestManager, mangas);
+        }
+        await stateManager.store(cacheKey, { at: Date.now(), mangas });
+        return mangas;
+    }
+    catch (error) {
+        // A stale row beats an empty one
+        if (cached)
+            return cached.mangas;
+        throw error;
+    }
+}
+exports.getDiscoverRowMangas = getDiscoverRowMangas;
+// ! Hero banner art
+// Weeb Central only has portrait covers; AniList has the wide banner art and
+// scores a Crunchyroll-style hero needs. Page() search returns an empty list on
+// a miss, where a bare Media() search fails the whole batch.
+const ANILIST_URL = "https://graphql.anilist.co";
+const HERO_SIZE = 10;
+async function withBannerArt(requestManager, mangas) {
+    const candidates = mangas.slice(0, HERO_SIZE * 2);
+    const aliases = candidates.map((manga, i) => `m${i}: Page(perPage: 1) { media(search: ${JSON.stringify(manga.title)}, type: MANGA, sort: SEARCH_MATCH) { bannerImage genres averageScore } }`);
+    let data = {};
+    try {
+        const response = await requestManager.schedule(App.createRequest({
+            url: ANILIST_URL,
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Accept": "application/json" },
+            data: JSON.stringify({ query: `query { ${aliases.join(" ")} }` })
+        }), 1);
+        data = JSON.parse(response.data ?? "{}").data ?? {};
+    }
+    catch {
+        // AniList is decoration only; fall back to plain covers
+        return mangas;
+    }
+    const enriched = candidates.map((manga, i) => {
+        const media = data[`m${i}`]?.media?.[0];
+        if (!media)
+            return manga;
+        const score = media.averageScore ? `★ ${media.averageScore}%` : "";
+        return {
+            ...manga,
+            bannerUrl: media.bannerImage ?? undefined,
+            subtitle: [score, ...(media.genres ?? []).slice(0, 3)].filter(Boolean).join(" · ")
+        };
+    });
+    // Lead with series that have real banner art, like Crunchyroll's carousel
+    const withBanner = enriched.filter(manga => manga.bannerUrl);
+    const rest = enriched.filter(manga => !manga.bannerUrl);
+    return [...withBanner, ...rest].slice(0, HERO_SIZE);
+}
 // ! Recently read
 const GQL_RECENTLY_READ = `
     query RecentlyRead($offset: Int, $first: Int) {
@@ -3634,7 +3715,7 @@ exports.TachiDeskInfo = {
     description: 'Paperback extension which aims to bridge all of Tachidesks features and the Paperback App. (GraphQL)',
     icon: 'icon.png',
     name: 'Tachidesk',
-    version: '3.2.0',
+    version: '3.3.0',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: types_1.ContentRating.EVERYONE,
     sourceTags: [
@@ -3818,11 +3899,14 @@ class TachiDesk {
         this.stateManager = App.createSourceStateManager();
         this.requestManager = App.createRequestManager({
             requestsPerSecond: 4,
-            requestTimeout: 20000,
+            // Discovery rows wait on Suwayomi's per-source queue, which the downloader also uses
+            requestTimeout: 45000,
             interceptor: {
                 interceptRequest: async (request) => {
                     const authEnabled = await (0, Common_1.getAuthState)(this.stateManager);
-                    if (authEnabled) {
+                    const serverURL = await (0, Common_1.getServerURL)(this.stateManager);
+                    // Only our own server gets the Suwayomi credentials, never third parties (AniList)
+                    if (authEnabled && request.url.startsWith(serverURL)) {
                         request.headers = {
                             ...request.headers,
                             authorization: await (0, Common_1.getAuthString)(this.stateManager)
@@ -4123,7 +4207,7 @@ class TachiDesk {
                     if (section.type === "discover") {
                         const row = (0, Discover_1.getDiscoverRow)(String(section.id));
                         if (row && discoverSource) {
-                            mangas = (await (0, Discover_1.fetchDiscoverRow)(this.stateManager, this.requestManager, discoverSource.id, row, 1)).mangas;
+                            mangas = await (0, Discover_1.getDiscoverRowMangas)(this.stateManager, this.requestManager, discoverSource.id, row);
                         }
                     }
                     else if (section.type === "recentread") {
@@ -4165,7 +4249,9 @@ class TachiDesk {
                         tiles.push(App.createPartialSourceManga({
                             title: manga.title,
                             mangaId: idStr,
-                            image: manga.thumbnailUrl ? serverURL + manga.thumbnailUrl.replace(/^\//, "") : ""
+                            // Hero rows carry AniList banner art and a score/genre subtitle
+                            image: manga.bannerUrl ?? (manga.thumbnailUrl ? serverURL + manga.thumbnailUrl.replace(/^\//, "") : ""),
+                            subtitle: manga.subtitle
                         }));
                     }
                     section.section.items = tiles;
