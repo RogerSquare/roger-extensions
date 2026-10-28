@@ -11,7 +11,7 @@ The upstream README follows below.
 
 1. Paperback → **Settings → External Sources → Edit → +**
 2. Base URL: `https://rogersquare.github.io/roger-extensions/`
-3. Browse the repo and install **Tachidesk**.
+3. Browse the repo and install **Panelhouse** (the Tachidesk extension, renamed; its source id is still `TachiDesk`).
 4. Open the source's settings and set the server URL (e.g. `http://10.0.0.145:4567`),
    then turn on authorization and enter the Suwayomi username and password.
 
