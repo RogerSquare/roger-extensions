@@ -3268,6 +3268,10 @@ async function fetchFeedRows(requestManager, serverURL, feedPort) {
             return undefined;
         const feed = JSON.parse(response.data ?? "");
         const rows = feed.rows ?? [];
+        // An empty feed (e.g. published during an outage) counts as unavailable,
+        // so the home page falls back to live rows instead of showing nothing
+        if (!rows.some(row => row.items.length > 0))
+            return undefined;
         // Image paths in the feed are relative to the feed server
         return rows.map(row => ({
             ...row,
@@ -3741,7 +3745,7 @@ exports.TachiDeskInfo = {
     description: "Panelhouse: Roger's self-hosted manga and webtoon library, served by Suwayomi (GraphQL). Based on the Tachidesk extension.",
     icon: 'icon.png',
     name: 'Panelhouse',
-    version: '3.5.3',
+    version: '3.5.4',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: types_1.ContentRating.EVERYONE,
     sourceTags: [
