@@ -239,6 +239,9 @@ export async function fetchFeedRows(requestManager: RequestManager, serverURL: s
         if (response.status !== 200) return undefined
         const feed = JSON.parse(response.data ?? "")
         const rows: FeedRow[] = feed.rows ?? []
+        // An empty feed (e.g. published during an outage) counts as unavailable,
+        // so the home page falls back to live rows instead of showing nothing
+        if (!rows.some(row => row.items.length > 0)) return undefined
         // Image paths in the feed are relative to the feed server
         return rows.map(row => ({
             ...row,

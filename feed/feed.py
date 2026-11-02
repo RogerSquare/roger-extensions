@@ -28,6 +28,9 @@ AUTH = base64.b64encode(f"{os.environ['AUTH_USERNAME']}:{os.environ['AUTH_PASSWO
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
 PORT = int(os.environ.get("PORT", "4580"))
 REFRESH_HOURS = float(os.environ.get("REFRESH_HOURS", "6"))
+RETRY_MINUTES = float(os.environ.get("RETRY_MINUTES", "15"))
+# Refuse to publish a build with less than this share of the previous feed's items
+MIN_KEEP_SHARE = float(os.environ.get("MIN_KEEP_SHARE", "0.25"))
 WARM_MAX_AGE_HOURS = float(os.environ.get("WARM_MAX_AGE_HOURS", "20"))
 DEDUPE_MINUTES = float(os.environ.get("DEDUPE_MINUTES", "5"))
 DEDUPE_DRY_RUN = os.environ.get("DEDUPE_DRY_RUN", "true").lower() != "false"
@@ -402,6 +405,13 @@ def build_feed():
         log(f"row {row['key']}: {len(items)} items "
             f"({sum(1 for m in mangas if m['sourceName'] != curated_name)} from other sources)")
 
+    # A network outage makes every source fail at once; publishing that (and pruning
+    # covers against it) blanked the home page for hours. Keep the last good feed.
+    total = sum(len(r["items"]) for r in rows_out)
+    previous = previous_feed_items()
+    if total == 0 or total < MIN_KEEP_SHARE * previous:
+        raise RuntimeError(f"build produced {total} items (previous feed had {previous}); keeping the previous feed")
+
     feed = {"version": 1, "generatedAt": int(time.time()), "sourceId": str(source_id), "rows": rows_out}
     tmp = os.path.join(DATA_DIR, "feed.json.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
@@ -470,15 +480,26 @@ def dedupe_loop():
         time.sleep(DEDUPE_MINUTES * 60)
 
 
+def previous_feed_items():
+    try:
+        with open(os.path.join(DATA_DIR, "feed.json"), encoding="utf-8") as f:
+            return sum(len(r["items"]) for r in json.load(f)["rows"])
+    except (OSError, ValueError, KeyError):
+        return 0
+
+
 def builder_loop():
     while True:
+        delay = REFRESH_HOURS * 3600
         try:
             if warm_series(build_feed()):
                 # Newly fetched series now have genres; rebuild so they show up in genre rows
                 build_feed()
         except Exception:
             log("build failed:\n" + traceback.format_exc())
-        time.sleep(REFRESH_HOURS * 3600)
+            # Don't wait a full refresh cycle to recover from an outage
+            delay = RETRY_MINUTES * 60
+        time.sleep(delay)
 
 
 class FeedHandler(SimpleHTTPRequestHandler):
