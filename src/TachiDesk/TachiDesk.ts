@@ -32,9 +32,13 @@ import {
 
 import {
     DISCOVER_ROWS,
+    feedRowContinuation,
     feedRowMangas,
     fetchDiscoverRow,
+    fetchFeed,
     fetchFeedRows,
+    fetchLivePage,
+    LivePaging,
     fetchLibraryIds,
     fetchRecentlyRead,
     findDiscoverSource,
@@ -77,7 +81,7 @@ export const TachiDeskInfo: SourceInfo = {
     description: "Panelhouse: Roger's self-hosted manga and webtoon library, served by Suwayomi (GraphQL). Based on the Tachidesk extension.",
     icon: 'icon.png',
     name: 'Panelhouse',
-    version: '3.5.4',
+    version: '3.6.0',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: ContentRating.EVERYONE,
     sourceTags: [
@@ -744,16 +748,33 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
         let page = metadata?.page ?? 1;
         let mangas: any[] = [];
         let hasNextPage = false;
+        let liveNext: LivePaging | undefined = undefined;
 
         switch (type) {
             case "feed": {
-                // The feed already holds a full row (two source pages); no further paging
-                const [feedRows, library] = await Promise.all([
-                    fetchFeedRows(this.requestManager, serverURL, this.feedPort),
+                // First page: the precached row. After that, keep paging live through
+                // every source so the whole server catalog is reachable.
+                const [feed, library] = await Promise.all([
+                    fetchFeed(this.requestManager, serverURL, this.feedPort),
                     fetchLibraryIds(this.stateManager, this.requestManager)
                 ]);
-                const row = feedRows?.find(feedRow => feedRow.key === sourceId);
-                if (row) mangas = feedRowMangas(row, library);
+                if (!feed) break;
+                const paging: LivePaging | undefined = metadata?.live;
+                if (!paging) {
+                    const row = feed.rows.find(feedRow => feedRow.key === sourceId);
+                    if (row) mangas = feedRowMangas(row, library);
+                    liveNext = feedRowContinuation(sourceId, feed, this.adultContent);
+                } else {
+                    const exclude = new Set(feed.excludeTitles);
+                    // A page whose series were all shown already would end the list; skip ahead instead
+                    let next: LivePaging | undefined = paging;
+                    for (let attempt = 0; next && mangas.length === 0 && attempt < 3; attempt++) {
+                        const result: { mangas: any[], next: LivePaging | undefined } = await fetchLivePage(this.stateManager, this.requestManager, next, library, exclude, this.adultContent);
+                        mangas = result.mangas;
+                        next = result.next;
+                    }
+                    liveNext = next;
+                }
                 break;
             }
             case "discover": {
@@ -819,7 +840,7 @@ export class TachiDesk implements PaperbackExtensionBase, MangaProgressProviding
             )
         }
 
-        metadata = hasNextPage ? { page: page + 1 } : undefined
+        metadata = liveNext ? { live: liveNext } : hasNextPage ? { page: page + 1 } : undefined
         return App.createPagedResults({
             results: tiles,
             metadata: metadata

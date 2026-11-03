@@ -13,6 +13,18 @@ Webtoons (webtoon sources or manhwa/manhua tags), its Latest listing into
 Newly Added / New Webtoons. Rows interleave sources rank by rank and hold one
 copy per title, from the highest-priority source.
 
+Rows only precache the first two pages of each source. The last row, Browse
+All Series, holds pool series no other row shows. `feed.json` also lists the
+pooled `sources`, `rowPages`, and (Back Room) `excludeTitles`. With those, the
+extension's View More keeps paging live past the precached items:
+- Browse All Series: every source's Popular listing from page 1.
+- Trending / Most Popular: every source's Popular listing.
+- Newly Added: every source's Latest listing.
+- Genre, anime and webtoon rows: Weeb Central's filtered listing (Panelhouse only).
+
+Each step interleaves the sources and keeps one copy per title, and the whole
+server catalog is reachable from the phone.
+
 `dedupe.py` checks the library every 5 minutes for the same series from two
 sources (normalized title, or AniList id when the edition markers match) and
 keeps the best copy: official sources first if they have at least 90% of the
