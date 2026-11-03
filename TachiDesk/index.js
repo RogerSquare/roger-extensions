@@ -3095,7 +3095,7 @@ exports.v1Migration = v1Migration;
 },{"buffer":63}],66:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.fetchRecentlyRead = exports.feedRowMangas = exports.fetchLibraryIds = exports.normalizeTitle = exports.fetchFeedRows = exports.feedBaseURL = exports.getDiscoverRowMangas = exports.fetchDiscoverRow = exports.findDiscoverSource = exports.getDiscoverRow = exports.DISCOVER_ROWS = exports.DISCOVER_SOURCE_NAME = void 0;
+exports.fetchRecentlyRead = exports.feedRowContinuation = exports.fetchLivePage = exports.feedRowMangas = exports.fetchLibraryIds = exports.titleKey = exports.normalizeTitle = exports.fetchFeedRows = exports.fetchFeed = exports.feedBaseURL = exports.getDiscoverRowMangas = exports.fetchDiscoverRow = exports.findDiscoverSource = exports.getDiscoverRow = exports.DISCOVER_ROWS = exports.DISCOVER_SOURCE_NAME = void 0;
 const Common_1 = require("./Common");
 // Crunchyroll-style discovery rows, built from one Suwayomi source's own
 // filters (sort, genre tags, anime adaptation, adult content). Filters are
@@ -3258,7 +3258,7 @@ function feedBaseURL(serverURL, feedPort) {
     return match ? `${match[1]}:${feedPort}/` : "";
 }
 exports.feedBaseURL = feedBaseURL;
-async function fetchFeedRows(requestManager, serverURL, feedPort) {
+async function fetchFeed(requestManager, serverURL, feedPort) {
     const base = feedBaseURL(serverURL, feedPort);
     if (!base)
         return undefined;
@@ -3272,15 +3272,24 @@ async function fetchFeedRows(requestManager, serverURL, feedPort) {
         // so the home page falls back to live rows instead of showing nothing
         if (!rows.some(row => row.items.length > 0))
             return undefined;
-        // Image paths in the feed are relative to the feed server
-        return rows.map(row => ({
-            ...row,
-            items: row.items.map(item => ({ ...item, image: base + item.image }))
-        }));
+        return {
+            // Image paths in the feed are relative to the feed server
+            rows: rows.map(row => ({
+                ...row,
+                items: row.items.map(item => ({ ...item, image: base + item.image }))
+            })),
+            sources: feed.sources ?? [],
+            rowPages: feed.rowPages ?? 2,
+            excludeTitles: feed.excludeTitles ?? []
+        };
     }
     catch {
         return undefined;
     }
+}
+exports.fetchFeed = fetchFeed;
+async function fetchFeedRows(requestManager, serverURL, feedPort) {
+    return (await fetchFeed(requestManager, serverURL, feedPort))?.rows;
 }
 exports.fetchFeedRows = fetchFeedRows;
 const GQL_LIBRARY_IDS = `
@@ -3297,6 +3306,11 @@ function normalizeTitle(title) {
         .replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim().replace(/^the /, "");
 }
 exports.normalizeTitle = normalizeTitle;
+// feed/dedupe.py title_key(): all-CJK titles normalize to "", so fall back to the raw title
+function titleKey(title) {
+    return normalizeTitle(title) || title.trim().toLowerCase();
+}
+exports.titleKey = titleKey;
 // The feed is library-agnostic; hide library series on the phone instead,
 // by id and by title so a copy on another source is hidden too
 async function fetchLibraryIds(stateManager, requestManager) {
@@ -3320,6 +3334,123 @@ function feedRowMangas(row, library) {
         .map(item => ({ id: item.id, title: item.title, imageUrl: item.image, subtitle: item.subtitle }));
 }
 exports.feedRowMangas = feedRowMangas;
+// ! Live paging across every source
+// "Browse All Series" and the View More of feed rows page through every
+// pooled source's own Popular (or Latest) listing, interleaved by rank with
+// one copy per title, so the whole server catalog is reachable, not just the
+// ~100 series precached per row.
+const GQL_SOURCE_LISTING = `
+    mutation SourceListing($sourceId: LongString!, $type: FetchSourceMangaType!, $page: Int!) {
+        fetchSourceManga(input: { source: $sourceId, type: $type, page: $page }) {
+            hasNextPage
+            mangas {
+                id
+                title
+                thumbnailUrl
+                inLibrary
+            }
+        }
+    }
+`;
+// Each source has its own queue in Suwayomi, so a few sources at once is safe
+const MAX_PARALLEL_SOURCES = 5;
+// Titles remembered between pages (metadata travels with every View More page)
+const MAX_SEEN_TITLES = 4000;
+async function inBatches(items, size, task) {
+    const results = [];
+    for (let i = 0; i < items.length; i += size) {
+        results.push(...await Promise.allSettled(items.slice(i, i + size).map(task)));
+    }
+    return results;
+}
+async function fetchLivePage(stateManager, requestManager, paging, library, excludeTitles, adultContent) {
+    const results = await inBatches(paging.sources, MAX_PARALLEL_SOURCES, async (sourceId) => {
+        if (paging.kind === "CURATED") {
+            const row = getDiscoverRow(paging.rowKey ?? "");
+            if (!row)
+                return { sourceId, mangas: [], hasNextPage: false };
+            return { sourceId, ...await fetchDiscoverRow(stateManager, requestManager, sourceId, row, paging.page, adultContent) };
+        }
+        const res = await (0, Common_1.graphqlRequest)(stateManager, requestManager, GQL_SOURCE_LISTING, {
+            sourceId,
+            type: paging.kind,
+            page: paging.page
+        });
+        return {
+            sourceId,
+            mangas: res.data.fetchSourceManga.mangas.filter((manga) => !manga.inLibrary),
+            hasNextPage: !!res.data.fetchSourceManga.hasNextPage
+        };
+    });
+    // A source that errors (e.g. a Cloudflare timeout) keeps its place and is retried next page
+    const lists = [];
+    const remaining = [];
+    results.forEach((result, i) => {
+        if (result.status === "fulfilled") {
+            lists.push(result.value.mangas);
+            if (result.value.hasNextPage)
+                remaining.push(result.value.sourceId);
+        }
+        else {
+            remaining.push(paging.sources[i] ?? "");
+        }
+    });
+    // Every source failing at once means the server is unreachable; stop rather than loop
+    if (lists.length === 0)
+        throw new Error("Every source failed to load");
+    const seen = new Set(paging.seen);
+    const mangas = [];
+    const longest = Math.max(0, ...lists.map(list => list.length));
+    for (let rank = 0; rank < longest; rank++) {
+        for (const list of lists) {
+            const manga = list[rank];
+            if (!manga)
+                continue;
+            const key = titleKey(manga.title);
+            if (seen.has(key) || excludeTitles.has(key))
+                continue;
+            if (library.ids.has(String(manga.id)) || library.titles.has(normalizeTitle(manga.title)))
+                continue;
+            seen.add(key);
+            mangas.push(manga);
+        }
+    }
+    const sources = remaining.filter(id => id !== "");
+    const next = sources.length > 0
+        ? { ...paging, sources, page: paging.page + 1, seen: [...seen].slice(-MAX_SEEN_TITLES) }
+        : undefined;
+    return { mangas, next };
+}
+exports.fetchLivePage = fetchLivePage;
+// Where a feed row's View More continues once its precached items run out
+function feedRowContinuation(rowKey, feed, adultContent) {
+    const seen = (feed.rows.find(row => row.key === rowKey)?.items ?? []).map(item => titleKey(item.title));
+    const all = feed.sources.map(source => source.id);
+    const start = feed.rowPages + 1;
+    if (all.length === 0)
+        return undefined;
+    switch (rowKey) {
+        case "browse":
+            // Everything: every source's Popular listing from the top
+            return { kind: "POPULAR", sources: all, page: 1, seen };
+        case "hero":
+        case "popular":
+            return { kind: "POPULAR", sources: all, page: start, seen };
+        case "new": {
+            const latest = feed.sources.filter(source => source.supportsLatest).map(source => source.id);
+            return latest.length > 0 ? { kind: "LATEST", sources: latest, page: start, seen } : undefined;
+        }
+        default: {
+            // Genre, anime and webtoon rows need the curated source's filters. Back Room's
+            // curated rows add explicit-only tags these filters lack, so it stops there.
+            const curated = feed.sources[0];
+            if (adultContent !== "False" || !curated || !curated.name.startsWith(exports.DISCOVER_SOURCE_NAME) || !getDiscoverRow(rowKey))
+                return undefined;
+            return { kind: "CURATED", sources: [curated.id], page: start, seen, rowKey };
+        }
+    }
+}
+exports.feedRowContinuation = feedRowContinuation;
 // ! Recently read
 const GQL_RECENTLY_READ = `
     query RecentlyRead($offset: Int, $first: Int) {
@@ -3745,7 +3876,7 @@ exports.TachiDeskInfo = {
     description: "Panelhouse: Roger's self-hosted manga and webtoon library, served by Suwayomi (GraphQL). Based on the Tachidesk extension.",
     icon: 'icon.png',
     name: 'Panelhouse',
-    version: '3.5.4',
+    version: '3.6.0',
     websiteBaseURL: "https://github.com/Suwayomi/Tachidesk-Server",
     contentRating: types_1.ContentRating.EVERYONE,
     sourceTags: [
@@ -4349,16 +4480,35 @@ class TachiDesk {
         let page = metadata?.page ?? 1;
         let mangas = [];
         let hasNextPage = false;
+        let liveNext = undefined;
         switch (type) {
             case "feed": {
-                // The feed already holds a full row (two source pages); no further paging
-                const [feedRows, library] = await Promise.all([
-                    (0, Discover_1.fetchFeedRows)(this.requestManager, serverURL, this.feedPort),
+                // First page: the precached row. After that, keep paging live through
+                // every source so the whole server catalog is reachable.
+                const [feed, library] = await Promise.all([
+                    (0, Discover_1.fetchFeed)(this.requestManager, serverURL, this.feedPort),
                     (0, Discover_1.fetchLibraryIds)(this.stateManager, this.requestManager)
                 ]);
-                const row = feedRows?.find(feedRow => feedRow.key === sourceId);
-                if (row)
-                    mangas = (0, Discover_1.feedRowMangas)(row, library);
+                if (!feed)
+                    break;
+                const paging = metadata?.live;
+                if (!paging) {
+                    const row = feed.rows.find(feedRow => feedRow.key === sourceId);
+                    if (row)
+                        mangas = (0, Discover_1.feedRowMangas)(row, library);
+                    liveNext = (0, Discover_1.feedRowContinuation)(sourceId, feed, this.adultContent);
+                }
+                else {
+                    const exclude = new Set(feed.excludeTitles);
+                    // A page whose series were all shown already would end the list; skip ahead instead
+                    let next = paging;
+                    for (let attempt = 0; next && mangas.length === 0 && attempt < 3; attempt++) {
+                        const result = await (0, Discover_1.fetchLivePage)(this.stateManager, this.requestManager, next, library, exclude, this.adultContent);
+                        mangas = result.mangas;
+                        next = result.next;
+                    }
+                    liveNext = next;
+                }
                 break;
             }
             case "discover": {
@@ -4420,7 +4570,7 @@ class TachiDesk {
                 subtitle: manga.subtitle
             }));
         }
-        metadata = hasNextPage ? { page: page + 1 } : undefined;
+        metadata = liveNext ? { live: liveNext } : hasNextPage ? { page: page + 1 } : undefined;
         return App.createPagedResults({
             results: tiles,
             metadata: metadata
