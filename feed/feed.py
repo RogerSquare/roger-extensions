@@ -357,7 +357,8 @@ def build_feed():
     # Every other installed source contributes its own Popular and Latest
     # listings, merged into the curated categories instead of rows of its own
     pool = {"POPULAR": [], "LATEST": []}
-    for src in other_sources(source_id):
+    others = other_sources(source_id)
+    for src in others:
         for kind in pool:
             if kind == "LATEST" and not src["supportsLatest"]:
                 continue
@@ -371,6 +372,11 @@ def build_feed():
                     if attempt == 2:
                         log(f"listing {src['displayName']} {kind} failed: {str(e).splitlines()[0][:200]}")
     genres = genres_of(list({m["id"] for lists in pool.values() for lst in lists for m in lst}))
+
+    sources = [{"id": str(src["id"]), "name": src["displayName"], "supportsLatest": bool(src["supportsLatest"])}
+               for src in others]
+    if source_id:
+        sources.insert(0, {"id": str(source_id), "name": curated_name, "supportsLatest": True})
 
     rows_out = []
     for row in ROWS:
@@ -405,6 +411,21 @@ def build_feed():
         log(f"row {row['key']}: {len(items)} items "
             f"({sum(1 for m in mangas if m['sourceName'] != curated_name)} from other sources)")
 
+    # Browse All Series: pool series that no other row shows, so the row is all
+    # fresh picks; its View More pages through every source live on the phone
+    hidden = excluded | {title_key(item["title"]) for row in rows_out for item in row["items"]}
+    browse = merge_ranked([[m for m in lst if title_key(m["title"]) not in hidden]
+                           for kind in ("POPULAR", "LATEST") for lst in pool[kind]], ROW_LIMIT)
+    browse_items = []
+    for m in browse:
+        image = mirror_cover(m)
+        if image:
+            browse_items.append({"id": str(m["id"]), "title": m["title"], "image": image})
+    if browse_items:
+        rows_out.append({"key": "browse", "title": "Browse All Series", "style": "singleRowNormal",
+                         "items": browse_items})
+        log(f"row browse: {len(browse_items)} items")
+
     # A network outage makes every source fail at once; publishing that (and pruning
     # covers against it) blanked the home page for hours. Keep the last good feed.
     total = sum(len(r["items"]) for r in rows_out)
@@ -412,7 +433,11 @@ def build_feed():
     if total == 0 or total < MIN_KEEP_SHARE * previous:
         raise RuntimeError(f"build produced {total} items (previous feed had {previous}); keeping the previous feed")
 
-    feed = {"version": 1, "generatedAt": int(time.time()), "sourceId": str(source_id), "rows": rows_out}
+    feed = {"version": 1, "generatedAt": int(time.time()), "sourceId": str(source_id), "rows": rows_out,
+            # The extension pages through these live for Browse All and View More
+            "sources": sources, "rowPages": ROW_PAGES,
+            # Back Room: Panelhouse's library, so live pages hide it too
+            "excludeTitles": sorted(excluded)}
     tmp = os.path.join(DATA_DIR, "feed.json.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(feed, f, ensure_ascii=False)
